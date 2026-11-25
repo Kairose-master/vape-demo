@@ -1,280 +1,180 @@
-# VAPE — 사용자 대화 · 감사자 파일 관리
+# VAPE — Verifiable AI Policy & Execution
 
-**`Start VAPE.command`를 더블클릭하면 한 개의 네이티브 통합 콘솔이 열립니다.** 시작만으로 모델·체인·모의가 실행되지 않습니다. 설치 스크립트·바이너리·개인 자료·API 키·기존 감사/체인 상태는 포함하지 않습니다.
+**사용자 대화 · 감사자 파일 관리 네이티브 통합 콘솔 (`unified-console`)**
 
+VAPE는 데이터 등급(L1/L2/L3)에 따른 AI 모델 라우팅, 네트워크 격리 파일 처리(App Sandbox / 익명 파이프), Ed25519 로컬 무결성 감사 서명, 그리고 사설 Hyperledger Besu 앵커링을 단일 macOS 네이티브 AppKit 콘솔로 통합한 검증 데모입니다.
 
+> **참고:** 이 저장소에는 선별된 소스 코드만 포함되어 있습니다. 설치 스크립트, 바이너리, 개인 자료, API 키, 외부 도구(Besu/JDK/soljson) 및 기존 감사/체인 상태는 포함되지 않으며, 시작만으로 모델·체인·모의가 자동 실행되지 않습니다.
 
-## 현재 기본 화면과 역할
+---
 
-`Start VAPE.command`의 기본 진입은 **사용자** 화면입니다. 프롬프트 입력, 등록 파일 첨부, 메시지 보내기 및 실제 응답/차단 이유를 표시합니다. **모델 설정**에서 Apple 로컬/OpenAI Cloud와 보안 키 준비를 선택합니다. **감사자** 화면에서 TXT 가져오기 → 등급 저장 및 사용자 B 허용 → 실제 등급 재조회 → 정책/서명 감사 검증을 같은 화면에서 수행합니다. 기술 진단과 기존 Besu 합성 검증은 감사자 화면의 상세 도구에 있습니다.
+## 📋 사전 요구사항 및 외부 도구 설치
 
-### 채팅 화면과 이력 저장 범위
+실행 모드에 따라 필요한 환경이 다릅니다. **기본 모의 데모**는 Python 3.9+만 있으면 되며, **실제 온디바이스 Apple 모델 + 사설 Besu 원장**을 연동하려면 아래 시스템 조건과 외부 도구를 먼저 설치해야 합니다.
 
-왼쪽 **새 대화**와 대화 목록에서 세션 내 대화를 만들고 다시 엽니다. 질문은 **나**, 답변·진행 상태는 **VAPE**로 구분하며 Apple 로컬/OpenAI 클라우드 및 차단 상태가 각 메시지에 표시됩니다. 입력창과 등록 파일 첨부는 하단에 있고 `⌘ Return`으로 전송할 수 있습니다.
+### 1. 시스템 및 하드웨어 요구사항
+* **기본 웹 모의 데모:** Python 3.9 이상 (별도 `pip` 패키지 불필요)
+* **통합 네이티브 콘솔 (모의 모델):** macOS 13 이상, Apple Command Line Tools (`xcode-select --install`)
+* **실제 Apple 모델 + 로컬 Besu 통합 실행:**
+  * **하드웨어/OS:** Apple Silicon Mac (`arm64`), **macOS 26 이상**
+  * **SDK 및 모델:** `FoundationModels` 포함 SDK, Apple Command Line Tools, 기기 내 Apple Intelligence 모델 활성화(`ready`)
 
-대화 본문은 앱 프로세스 메모리에만 보관합니다. **앱을 종료하면 대화 목록도 사라집니다.** 대화 재열기는 표시 동작이며 과거 질문/답변/첨부 내용을 후속 추론이나 Cloud에 자동 전송하지 않습니다. 매번 현재 입력과 현재 승인된 첨부만 사용합니다. 대화 본문을 감사 로그에 복제하지 않으며 기존 메타데이터 감사·등록·정책 저장은 그대로 유지합니다. 실사용 본문의 암호화 영구 저장·검색·동기화는 구현하지 않았습니다.
+### 2. 필수 도구 설치 명령어 (실제 Apple + Besu 연동 시)
+저장소 상위 형제 폴더(`../tools`)에 외부 도구를 배치하는 기준의 설치 스크립트입니다.
 
-### 첨부 및 권한 경계
+```bash
+# 1) Apple Command Line Tools 및 Node.js 설치 (Homebrew 기준)
+xcode-select --install 2>/dev/null || true
+brew install node
 
-- 사용자 화면에는 OS 파일 선택·임의 경로 첨부·드래그앤드롭이 없습니다. 감사자 A가 등록하고 등급을 저장해 B에게 허용한 등록 ID만 목록에 표시됩니다.
-- 등록소는 소유자 A와 소비자 B를 별도 principal로 취급합니다. B는 등급/권한을 바꿀 수 없고, 미허용 C는 등록 ID를 알아도 소비할 수 없습니다. 등급 변경·권한 철회·원본 변경·재등록은 기존 revision/승인을 무효화합니다.
-- 화면 전환은 **신뢰된 앱 내부 데모 역할 선택**입니다. 외부 인증, 서로 다른 OS 사용자 또는 악의적인 동일 사용자 프로세스 방어를 주장하지 않습니다. 등록소의 소유자/읽기 허용 검사는 UI와 별도로 강제합니다.
-- 파일 도우미만 사용자 선택 읽기 전용·보안 범위 bookmark 권한을 가지며 네트워크 권한은 없습니다. 키가 있는 콘솔은 파일 접근 권한이 없습니다. 본문은 두 네이티브 프로세스의 익명 파이프로만 이동하며 Python/HTTP/브라우저/셸 인수/공유 메모리 파일에 전달되지 않습니다. launcher는 pipe 본문을 읽거나 기록하지 않습니다.
-- 첨부의 실제 Apple 처리는 네트워크 없는 파일 도우미 안에서 기존 private handoff를 거칩니다. Cloud는 기본 정책 v2에서 L2/L3 등록 파일만 허용하며 실제 전송될 프롬프트+문서 전체를 스크롤 가능한 확인창에 표시합니다. 승인 후 파일·등급·정책·revision을 다시 검사하고 일회 승인 token을 소비한 뒤 전송합니다. L1 및 미등록 Cloud는 호출 전 차단합니다.
-- 키 준비는 송출 0회, Cloud는 요청당 명시적 1회 승인이고 자동 재전송/모의 대체가 없습니다. 키는 송출 시 참조를 버립니다. 입력 메시지는 최대 64KiB, 첨부 질의는 8KiB이며 결합된 전송 본문은 64KiB 이하입니다. 이전 대화가 자동 첨부되지는 않습니다.
+# 2) 작업 디렉터리 생성 (저장소 상위 ../tools 경로)
+mkdir -p ../tools && cd ../tools
 
-### 감사와 체인
+# 3) Hyperledger Besu 26.11.1 다운로드 및 압축 해제
+curl -fL -o besu-26.11.1.tar.gz \
+  "https://github.com/hyperledger/besu/releases/download/26.11.1/besu-26.11.1.tar.gz"
+tar -xzf besu-26.11.1.tar.gz
+# -> 생성 경로: ../tools/besu-26.11.1
 
-감사자 화면은 기기 내 Ed25519 서명 기록과 서명된 완전성 manifest를 재검증합니다. 사용자 화면에서 등록 파일을 첨부해 Apple 로컬 요청을 보내면, **같은 resource ID·등급 revision·정책 버전·실행 ID**의 정책 판정 → 송신 의도 → 실제 수신 결과를 서명합니다. L1 Cloud 정책 차단은 네트워크 없는 파일 도우미의 실제 등록소 판정이며, L2/L3는 별도 승인 필요로 표시하고 송신하지 않습니다.
+# 4) Temurin JDK 25.0.5.1+2 (macOS aarch64) 다운로드 및 압축 해제
+curl -fL -o OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5.1_2.tar.gz \
+  "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5.1_2.tar.gz"
+tar -xzf OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5.1_2.tar.gz
+# -> 생성 경로: ../tools/jdk-25.0.5.1+2/Contents/Home
 
-서명으로 실행 결과가 확인되면 **같은 실행 Besu 앵커 · 독립 검증 (1회)** 버튼이 활성화됩니다. 파일/등급/허용 revision을 다시 확인한 뒤 별도 네이티브 검증기가 서명·순서·동일 실행 결합을 검증합니다. 검증된 증거의 정책/실행 루트만 기존 사설 localhost Besu에 기록하고, receipt 및 별도 RPC read-back을 확인한 후 자기 노드를 종료합니다. 파일 원문·경로·프롬프트·사용자 계정은 체인에 넣지 않습니다. 프롬프트와 파일의 결합은 실행별 UUID로 구분한 해시로만 증거에 남습니다.
+# 5) Solidity Compiler 0.8.28 (soljson-0.8.28.js) 다운로드
+curl -fL -o soljson-0.8.28.js \
+  "https://binaries.soliditylang.org/bin/soljson-v0.8.28+commit.7893614a.js"
 
-모델의 거부/판정 불가도 성공으로 바꾸지 않고 `localDecision`, `localDelivery`, `localReason`에 남깁니다. 이 경우 체인 `verified`는 실패 감사의 서명/기록 검증이며 모델 성공이 아닙니다.
+# 원래 디렉터리로 복귀
+cd -
+```
 
-성공한 체인 관측은 로컬 서명으로 보존하며, 감사자 **저장된 감사 이력 재검증**에서 같은 파일의 실행과 앵커 관측을 다시 볼 수 있습니다. `currentRevision=false`는 현재 등급의 결과가 아닙니다. 종료된 임시 노드의 기록은 **당시 독립 read-back 관측**이지 현재 살아 있는 체인을 다시 조회한 결과가 아닙니다. 제출 불명확·실패는 자동 재시도하지 않습니다. 실행/앵커 중 화면 전환을 막아 같은 앱에서 등급 변경을 섞지 않습니다.
+### 3. 도구 경로 설정 (기본 경로와 다를 경우)
+도구는 기본적으로 저장소 상위 형제 폴더(`../tools`)를 자동 참조합니다. 다른 경로에 설치한 경우 저장소 루트에 `.runtime/launcher-settings.json` 파일을 생성해 경로를 지정하세요.
 
-서명 키 pinning은 같은 기기에서 시작한 네이티브 파일 도우미를 신뢰하는 데모 경계입니다. 외부 인증/원격 attestation이나 다중 검증자 합의 증명은 아닙니다. 기존 감사·체인 상세의 고정 합성 진단도 남아 있지만, 선택 파일의 결과와 혼동하지 않습니다. OpenAI 흐름은 이 Apple→Besu 증거와 별도이며 이번 통합 검증에 사용하지 않습니다.
+```bash
+mkdir -p .runtime
+cat << 'EOF' > .runtime/launcher-settings.json
+{
+  "toolsDirectory": "../tools",
+  "nodeDirectory": "/opt/homebrew/bin"
+}
+EOF
+```
 
-### 설치된 앱에서 같은 파일 데모
+---
 
-1. 감사자 화면에서 합성 TXT를 가져와 등급을 저장하고 사용자 B 읽기를 허용합니다. 이미 등록된 파일은 재등록하지 않고 사용자 첨부 목록에서 고릅니다.
-2. 사용자 화면에서 해당 ID·등급·revision을 선택하고 **이 문서를 한 문장으로 요약해 주세요.** 를 입력합니다. 모델 설정은 Apple 로컬입니다. 직접 메시지 보내기를 누릅니다.
-3. 실제 응답 또는 정확한 실패 코드를 확인합니다. L1은 `deny-no-send`, L2는 `approval-required-no-send`이며 이 흐름은 Cloud를 호출하지 않습니다.
-4. **같은 실행 Besu 앵커 · 독립 검증 (1회)** 를 누릅니다. `localDecision=allow`, `localDelivery=received`, `independentRead=true`, `nodeStopped=true`를 각각 확인합니다. `status=verified`만으로 모델 성공을 판단하지 마세요.
-5. 감사자 → 저장된 감사 이력 재검증에서 같은 파일/실행의 서명과 보존된 체인 관측을 확인합니다. 원문/질문/응답은 원장에 저장하지 않습니다.
+## 🚀 Quick Start (실행 방법)
 
-MacBook 실제 GUI에서 L1/L2 문서 요약 응답과 같은 실행의 Besu receipt·독립 read-back을 확인했습니다. L1의 다른 질문은 Apple `appleGuardrail`로 거부됐고 그 실패도 별도 실행으로 보존했습니다. 요청 문구에 따른 모델 거부까지 제거하거나 성공을 보장하지 않습니다. 시스템 지시문과 사용자 질문/참조 문서는 분리하며, 모델 안전장치를 비활성화하지 않습니다. 자동 재전송은 없습니다.
+저장소를 클론한 뒤 환경에 맞는 실행 모드를 선택하세요.
 
-### 합성 검증과 GUI QA
+```bash
+git clone -b unified-console https://github.com/Kairose-master/vape-demo.git
+cd vape-demo
+python3 --version  # Python 3.9 이상 확인
+```
 
-`./"Start VAPE.command" --ui-test`는 별도 helper container에서 합성 등록·등급 변경·A→B 허용·B 변경 거부·C 소비 거부·철회/오래된 승인 거부·감사 변조/누락·파일 변경 차단 및 익명 pipe 연결과 빈 키 UI를 검사합니다. `--gui-qa`는 별도 합성 레지스트리를 가진 눈에 보이는 QA 창입니다. 파일 선택창에서 전용 합성 TXT를 직접 선택하세요. macOS가 마지막 폴더를 복원할 수 있습니다. 실사용 파일·키를 테스트에 넣지 마세요. 실제 Cloud 호출은 자동 테스트에 포함되지 않습니다.
+### 1. 실제 Apple 모델 + 로컬 Besu 통합 실행 (도구 설치 완료 시)
+```bash
+# 1) 도구 SHA256 및 Apple 모델 준비 상태 사전 점검 (추론/노드 시작 없음)
+python3 demo.py --mode preflight --tools-dir ../tools
 
-## 다른 Mac에서 시작하기
+# 2) 창 없는(Headless) 실제 Apple 1회 + Besu 채굴/RPC 재조회 검증
+python3 demo.py --mode unified-check --tools-dir ../tools
 
-이 저장소는 검토된 `b12b6120926eb828f2daab5a90a37b3486810b53` 릴리스의 선별 소스만 새 히스토리로 내보낸 것입니다. 원본 개발 히스토리·바이너리·로컬 증거·사용자 자료·키는 포함하지 않습니다. 비공개 저장소에 접근할 수 있는 본인 GitHub 계정으로 clone하거나 **Code → Download ZIP**을 사용하고, 압축을 푼 폴더에서 다음 명령을 실행합니다.
+# 3) 실제 Apple + Besu 발표용 통합 UI 실행
+python3 demo.py --mode unified --tools-dir ../tools
+```
 
-```sh
-python3 --version
-python3 demo.py --self-test
+### 2. 통합 네이티브 콘솔 실행 (macOS AppKit UI)
+```bash
 chmod +x "Start VAPE.command"
 ./"Start VAPE.command"
 ```
+* Finder에서 `Start VAPE.command`를 **더블클릭**해도 동일하게 실행됩니다. (최초 실행 시 설치된 CLT로 컴파일하므로 시간이 다소 걸릴 수 있습니다.)
+* **기본 진입 화면:** 사용자 대화 화면 (감사자 화면 전환 및 상세 도구는 상단/내부 UI에서 전환)
 
-Python **3.9 이상**이 필요하고 pip 패키지는 필요 없습니다. 클릭 진입점은 단일 AppKit 콘솔입니다. Apple Local + Besu, 별도 OpenAI L2 워크플로, 오프라인 모의 검증을 감사자 상세 도구와 모델 설정에서 조작합니다. 각 실행은 별도의 증거이며 같은 파일/run에서 두 실제 모델을 호출하지 않습니다. 아래 `demo.py` 명령들은 기존 개별 개발 진입점입니다. 새 기기에서 실제 모델·원장 결과를 확인하기 전에는 성공으로 간주하지 않습니다.
+### 3. 기본 웹 모의 데모 실행 (외부 도구·Apple 모델 불필요)
+Python 3.9+ 환경과 브라우저만 있으면 OS에 관계없이 정책·감사·격리 흐름을 테스트할 수 있습니다.
 
-### 한 창 통합 콘솔 사용법
-
-- **Apple Local + Besu**: `준비 상태 확인`은 추론·거래 0회입니다. `disabled`는 Apple Intelligence 비활성, `not_ready`는 모델 준비 미완료, `*_unsupported`는 기기/OS/SDK 미지원입니다. `ledger.status`와 archives 항목은 도구 누락/해시 불일치를 표시합니다. 양쪽이 ready일 때만 고정 합성 TXT의 L1 Cloud 차단 → 실제 Apple 응답 → 새 Besu 거래/별도 RPC 확인을 실행합니다. 이 경로는 검증된 headless 합성 파일 선택 대역을 사용하며 사용자 파일 picker 승인을 대신하지 않습니다. Besu만 별도로 실행할 수도 있지만 Apple 증거로 표시하지 않습니다.
-- **OpenAI**: 같은 창의 네이티브 보안 필드에서 사용자가 직접 키를 준비합니다(전송 0회). 사용자가 입력한 프롬프트 및 허용된 첨부의 실제 전송 내용과 모델을 확인하고 별도 **1회 전송 승인**을 눌러야 요청합니다. 기존 CloudEngine/보안 붙여넣기 코드와 App Sandbox + network.client만 그대로 사용합니다. 키·본문은 로컬 하네스 서버/브라우저/셸 인수/로그/상태 파일에 전달하지 않습니다. 키는 네이티브 앱과 macOS Keychain에서만 취급합니다. L1 Apple/Besu 실행과 다른 워크플로입니다.
-- **오프라인 모의**: 감사자 모의 진단 안의 명시적 실행 버튼으로 정책/감사/격리 HTTP 자체 검증을 수행합니다. 실제 모델·체인 결과가 아닙니다. 별도 브라우저나 Cloud 앱을 열지 않습니다.
-
-실패/사용 불가/판정 불가는 그대로 표시하며 자동 fallback·재송출이 없습니다. 실행 버튼은 세션당 1회이며 새 세션을 시작하기 전에 기존 증거를 확인하세요. 창을 닫아도 진행 중인 로컬 검증은 자기 노드 정리를 마칠 때까지 기다립니다. 원본 개발용 앱이나 기존 보안 키 창에는 접근하지 않습니다.
-
-콘솔의 로컬 백엔드는 매번 새 127.0.0.1 포트(8765 제외)와 임의 capability를 사용합니다. 고정 action만 허용하고 Origin·무인증·경로/본문/키 입력은 거부합니다. 동일 사용자 계정의 신뢰 경계이며 악성 동일-UID 프로세스 방어/원격 인증을 주장하지 않습니다. Cloud 키와 요청은 이 경계를 통과하지 않습니다. 원시 감사/노드 상태는 새 기기 내 임시 폴더에만 남고 콘솔은 허용된 메타데이터만 받습니다.
-
-기본 도구 위치는 저장소의 형제 `tools` 폴더입니다. Finder PATH에 Node가 없거나 다른 도구 위치를 쓸 때만 **Git에 포함되지 않는** `.runtime/launcher-settings.json`을 직접 준비합니다. 상대 경로는 저장소 기준입니다.
-
-```json
-{"toolsDirectory":"../tools","nodeDirectory":"../tools/node/bin"}
-```
-
-```sh
-./"Start VAPE.command" --self-test  # 합성 경계/금지 입력/실패 상태 시험
-./"Start VAPE.command" --ui-test    # 새 앱의 비표시 레이아웃·sandbox 연결 검사, 키/모델 호출 없음
-./"Start VAPE.command" --check      # 현재 Mac 실제 준비 상태, 준비 안 됨 exit 2
-./"Start VAPE.command" --action besu  # 명시적인 독립 Besu 실검증, 새 노드만 정리
-```
-
-macOS 13 이상에서 콘솔을 빌드할 수 있지만 실제 Apple 모델은 아래의 macOS 26/Apple Silicon/모델 준비 조건이 별도로 필요합니다. 로컬 ad-hoc 서명이며 공증/다른 물리 기기 검증을 주장하지 않습니다. 최초 실행은 설치된 CLT로 컴파일하므로 시간이 걸릴 수 있습니다. 다운로드나 설정 변경은 없습니다.
-
-### 실제 통합 실행 전 준비
-
-1. Apple Silicon Mac, macOS 26 이상, FoundationModels를 포함한 SDK/Apple Command Line Tools, 기기에서 사용 가능한 Apple 시스템 모델을 준비합니다. 필요한 설치·Apple Intelligence 설정은 사용자가 직접 Apple의 공식 경로에서 수행합니다. 런처는 이를 설치하거나 활성화하지 않습니다.
-2. Node.js와 아래 고정 버전의 Besu·Temurin JDK·soljson을 공식 배포처에서 별도로 준비합니다. 정확한 archive 이름·SHA256·추출 구조는 아래 도구 기준과 소스에 고정되어 있습니다. 다른 버전으로 이름만 바꿔 넣지 마세요. 이 저장소에는 도구·모델이 없습니다.
-3. 도구 폴더는 저장소 밖에 두고 `python3 demo.py --mode preflight --tools-dir /path/to/verified-tools`로 확인합니다. 미지원·누락·hash 불일치는 중단되며 자동 다운로드하지 않습니다.
-4. 둘 다 ready일 때 `python3 demo.py --mode unified --tools-dir /path/to/verified-tools`로 새 창을 엽니다. 출력된 새 합성 TXT를 선택하고 L1 등록 후 **L1 검증 → Besu 기록 (1회)**를 누릅니다.
-
-기본 모의 데모는 Node/Java/Apple 모델이 없어도 사용할 수 있습니다. Native 앱은 로컬 ad-hoc 빌드이며 공증된 배포 앱이 아닙니다. 보안 설정을 끄거나 조직 제한을 우회하지 마세요. 준비가 안 된 Mac은 기본 모의 모드만 명시적으로 사용합니다.
-
-## 새 통합 경로: L1 → Apple 실모델 → 로컬 Besu
-
-이 판은 `unified-apple-ledger`의 **299dbfd3**를 포함합니다. 이전 소스 ZIP의 기본 키 없는 모의 경로는 유지하지만, 그 모의 결과를 통합 경로의 성공으로 대체하지 않습니다.
-
-1. 이미 검증하여 준비한 로컬 도구 디렉터리로 **실행 전 점검**을 합니다. 이 명령은 모델 추론·노드 시작·Cloud 호출 없이 CPU/OS/모델 준비 상태 및 도구 archive SHA256을 확인합니다.
-
-```sh
-python3 demo.py --mode preflight --tools-dir /path/to/verified-tools
-```
-
-`apple.status`는 `ready`, `disabled`, `not_ready`, `device_unsupported`, `os_unsupported`, `framework_unsupported` 등을 구분합니다. 개발 도구/프로브 실패도 명시적으로 남습니다. `ledger.status`는 도구 미지정·누락·hash 불일치·플랫폼 미지원과 준비 완료를 구분합니다. `architecture`는 현재 Python 프로세스의 감지값입니다. Rosetta의 x86_64 프로세스는 통합 실행을 중단하며 native arm64 환경을 별도로 준비해야 합니다. 둘 다 준비되어야 exit 0이며, 나머지는 중단합니다. 도구·모델 설치나 설정 변경은 하지 않습니다.
-
-2. **창 없는 합성 실검증**은 준비 상태를 다시 확인하고 새 임시 소스/자료에서 실제 Apple 1회 및 새 사설 Besu 노드를 사용합니다. OpenAI 키·요청은 없습니다.
-
-```sh
-python3 demo.py --mode unified-check --tools-dir /path/to/verified-tools
-```
-
-L1 Cloud 거부 → 실제 로컬 응답 → Ed25519/Merkle 검증 → 채굴 receipt → 별도 RPC 재조회를 연결합니다. 변조·누락·정책 변경·다른 run ID는 거부되어야 합니다. 파일 선택/scope만 시험 대역이므로 GUI의 picker·App Sandbox 승인 검증으로 부르지 않습니다. 실패·사용 불가를 모의 응답으로 바꾸지 않습니다. 이번 실행 자료는 독립 임시 폴더에 보존하며 기존 자료를 지우지 않습니다.
-
-3. **사용자 발표 UI**는 별도로 시작합니다. 키가 열려 있는 기존 앱은 그대로 두고, 새 창에서 사용자가 직접 합성 파일을 선택하고 `L1 검증 → Besu 기록 (1회)`를 승인합니다.
-
-```sh
-python3 demo.py --mode unified --tools-dir /path/to/verified-tools
-```
-
-GUI는 별도 사용자 리허설 단계입니다. 완료 전 터미널을 중단하면 판정 불가가 될 수 있습니다. 실패/시간 초과 뒤 자동 재시도하지 않습니다. 완료된 노드는 종료되며, 화면의 성공은 해당 시각의 확인이지 현재 온라인 체인 검증이 아닙니다. 서명 공개키/run ID는 새 로컬 도우미가 고정하는 동일 사용자 신뢰 모델이며 원격 인증이 아닙니다. policyRoot는 정규화된 정책 snapshot의 단일 잎 root이고, executionRoot는 서명 plan과 사건의 Merkle root입니다. 체인에는 본문·파일 경로·모델 응답이 아니라 루트와 결합 메타데이터만 기록합니다.
-
-### 통합 도구 기준 (소스 설정에서 확인)
-
-- Besu **26.11.1**: `besu-26.11.1.tar.gz`
-- Temurin JDK **25.0.5.1+2**, macOS **aarch64**: `OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5.1_2.tar.gz`
-- Solidity compiler **0.8.28**: `soljson-0.8.28.js`
-- Bouncy Castle **1.86**는 해당 Besu 배포의 jar를 사용합니다. Node.js는 이미 설치되어 있어야 하며 기존 driver가 별도 버전을 고정하지 않습니다.
-- 기대 chain ID: **2026112403**. 새 단일 validator QBFT, loopback 동적 포트 전용입니다. 운영 원장/다중 조직 합의/원격 신원 증명과 다릅니다.
-
-정확한 archive SHA256은 `vape/ledger/local_exercise.py`의 `pins`에서 읽어 preflight가 출력합니다. 필요한 추출 디렉터리는 `jdk-25.0.5.1+2/Contents/Home`과 `besu-26.11.1`입니다. archive hash와 실행 파일 존재를 검사하며, 추출된 전체 도구 트리의 모든 바이트를 다시 검증하는 것은 아닙니다. 검토된 원본 도구를 사용하세요. 도구와 생성된 chain config/상태/키는 이 ZIP에 없습니다.
-
-통합 실경로는 macOS arm64 및 Foundation Models 준비가 필요합니다. Intel/미지원 OS/비활성 모델은 기본 모의 데모를 **명시적으로** 선택할 수 있으나 통합 성공으로 표시되지 않습니다. MacBook Air 또는 다른 물리 Mac에서 검증했다고 주장하지 않습니다.
-
-## 1. 가장 간단한 시작
-
-ZIP을 새 폴더에 풀고 터미널에서 해당 폴더로 이동합니다. 이미 설치된 Python 3.9 이상이 필요합니다. 의존성 설치는 없습니다.
-
-```sh
+```bash
 python3 demo.py
 ```
+* 터미널에 출력된 `http://127.0.0.1:<임시포트>` 주소를 브라우저에서 직접 엽니다. (`Ctrl+C`로 종료)
 
-표시된 `http://127.0.0.1:임시포트`를 브라우저에서 엽니다. 외부 서버에 연결하지 않으며, 기존 8765를 사용하지 않습니다. macOS에서 브라우저/창을 자동으로 열거나 키 입력창을 건드리지 않습니다. 종료는 **Ctrl-C**입니다. 이 실행의 합성 자료·모의 감사키는 새 임시 폴더에 생성되고 정상 종료 시 정리됩니다.
+### 4. 자체 검증 및 상태 점검 명령어
+실행 전 현재 Mac의 준비 상태나 보안 경계 테스트를 먼저 확인할 수 있습니다.
 
-화면의 `local-model`, `cloud-model`은 모두 **localhost 모의 수신기**입니다. 합성 문서 읽기, 승인된 모의 모델 수신, 도구 반출 차단, 정책 변경 후 재실행, 과거 증거 유지와 변조 검증을 확인합니다. 이 웹 정책 예제와 아래 네이티브 L1/L2/L3 예제는 별개이며 동일 정책/동일 사건으로 합치지 않습니다. 모의 Cloud 허용을 실제 Cloud 허용·성공으로 발표하면 안 됩니다.
+```bash
+# 1) 현재 Mac의 실제 Apple 모델 및 로컬 도구 준비 상태 확인 (미준비 시 exit 2)
+./"Start VAPE.command" --check
 
-## 2. 한 명령 자체 검증
+# 2) 합성 경계·금지 입력·실패 상태 및 HTTP 진입점 자체 검증
+./"Start VAPE.command" --self-test
+# 또는: python3 demo.py --self-test
 
-```sh
-python3 demo.py --self-test
+# 3) 비표시 레이아웃·Sandbox 연결·익명 파이프·빈 키 UI 검사 (추론/키 호출 0회)
+./"Start VAPE.command" --ui-test
+
+# 4) GUI QA 모드 (별도 합성 레지스트리가 적용된 테스트 창 실행)
+./"Start VAPE.command" --gui-qa
 ```
 
-정책·감사·UI 계약 테스트와 새 프로세스의 실제 HTTP 진입점 검증을 실행하고 종료합니다. 모든 입력은 합성이고 수신기는 loopback입니다. 기존 서버/런타임을 탐색하지 않습니다. 실패는 실패로 반환하며 가짜 성공으로 대체하지 않습니다.
+---
 
-## 3. macOS 발표 UI와 Apple 실모델 — 선택 기능
+## 📋 데모 시나리오 워크플로 (같은 파일 검증)
 
-Python 3.9+ 외에 **이미 설치된 Apple Command Line Tools**가 필요합니다. 자동 설치·설정 변경·모델 다운로드는 없습니다.
+통합 콘솔(`Start VAPE.command`) 실행 후 아래 순서대로 권한 격리부터 체인 앵커링까지 검증할 수 있습니다.
 
-| 경로 | 최소 조건 | 실제 모델 여부 |
-|---|---|---|
-| 기본 `python3 demo.py` | Python 3.9+, 현대 브라우저 | 모의, 키 없음 |
-| `--mode native` | macOS 13+ 빌드 기준, CLT | 네이티브 정책 경로 UI, 모델 비활성 |
-| `--mode apple` | Apple Silicon, macOS 26+ 및 FoundationModels 지원 SDK, 시스템 모델 사용 가능 | 사용자 선택·실행 후 실제 Apple on-device 모델 |
-| Intel Mac | macOS 13+ 네이티브 빌드 검사 대상 | Apple 실모델 지원 대상으로 안내하지 않음; 기본 모의 모드 사용 |
-| Linux / Windows | 기본 Python 경로만 후보 | AppKit UI/Apple 모델 불가, 실제 기기 검증 없음 |
+1. **[감사자 화면] 파일 등록 및 권한 부여**
+   * 합성 TXT 파일을 가져온 뒤 등급(`L1`, `L2`, `L3`)을 저장하고 **사용자 B 읽기 허용**을 설정합니다.
+2. **[사용자 화면] 프롬프트 전송**
+   * 하단 첨부 목록에서 감사자가 허용한 등록 ID·등급·revision을 선택합니다. (OS 파일 탐색기나 드래그앤드롭 첨부는 차단됨)
+   * 모델 설정에서 **Apple 로컬**을 선택하고 질의(예: *"이 문서를 한 문장으로 요약해 주세요."*)를 입력 후 전송(`⌘ + Return`)합니다.
+3. **[정책 및 결과 확인]**
+   * **L1:** Cloud 호출을 원천 차단(`deny-no-send`)하고 로컬 Apple 모델만 실행합니다.
+   * **L2:** 로컬 실행 외에, Cloud 선택 시 실제 전송될 `프롬프트+문서 전문` 확인창을 띄워 사용자의 명시적 1회 승인 후에만 OpenAI로 전송합니다. (`approval-required-no-send`)
+   * **L3:** 외부 송신은 차단되며, 감사자 화면에서 승인된 **새 로컬 리비전(`0600` 권한)** 파생 저장만 지원합니다.
+4. **[체인 앵커링] Besu 앵커 · 독립 검증 (1회)**
+   * 실행 결과가 Ed25519로 서명되면 활성화되는 **`같은 실행 Besu 앵커 · 독립 검증 (1회)`** 버튼을 누릅니다.
+   * 파일 원문·경로·프롬프트는 제외하고 `policyRoot` 및 `executionRoot` 해시만 사설 localhost Besu 노드에 기록하며, `localDecision=allow`, `localDelivery=received`, `independentRead=true`, `nodeStopped=true` 상태를 확인합니다.
+5. **[감사자 화면] 이력 재검증**
+   * `저장된 감사 이력 재검증` 메뉴에서 서명 무결성과 보존된 체인 관측 기록을 재확인합니다.
 
-```sh
-python3 demo.py --mode native
-python3 demo.py --mode apple
-```
+---
 
-**두 명령 중 필요한 하나만 실행하세요.** 새 임시 소스 복사본에 앱과 합성 파일을 만들고 새 앱을 시작합니다. `--mode apple`은 실제 로컬 모델 사용에 대한 명시적 선택입니다. 출력된 이번 실행의 합성 파일만 사용자 본인이 파일 선택 창에서 선택합니다. L1 Cloud 차단과 실제 로컬 결과를 구분합니다. Apple 모델이 준비되지 않으면 실패/사용 불가로 남으며 Cloud나 모의 응답으로 자동 전환하지 않습니다. 기본 모의 데모를 별도로 선택할 수 있습니다.
+## 🔒 핵심 아키텍처 및 보안 경계
 
-임시 앱 복사본은 열려 있는 앱 보호를 위해 자동 삭제하지 않습니다. 사용 후 앱과 해당 런처를 종료하고 **이번에 출력된 임시 폴더만** 필요에 따라 정리하세요. 앱 컨테이너에도 이 실행의 비공개 등록·서명 감사 기록이 생성됩니다. 소스 ZIP에는 포함하지 않습니다.
+* **프로세스 및 권한 분리:** 파일 도우미(File Helper)만 사용자 선택 읽기 전용(Security-Scoped Bookmark) 권한을 가지며 **네트워크 권한이 없습니다**. 반대로 API 키가 있는 콘솔 프로세스는 파일 시스템 직접 접근 권한이 없으며, 본문은 두 네이티브 프로세스 간 **익명 파이프(Anonymous Pipe)**로만 전달됩니다.
+* **메모리 전용 대화 및 엄격한 페이로드 제한:** 대화 본문은 앱 프로세스 메모리에만 유지되며 종료 시 소멸합니다. 과거 대화 이력은 후속 추론이나 Cloud에 자동 전송되지 않습니다. (입력 메시지 최대 `64KiB`, 첨부 질의 최대 `8KiB`, 결합 전송 본문 `64KiB` 이하)
+* **OpenAI Cloud L2 보안 통제:** API 키는 macOS Keychain(iCloud 동기화 비활성)에 로컬 저장되며, 실제 Cloud 송신은 L2 등급 문서에 한해 사용자가 본문 전체를 확인하고 **세션당 명시적 1회 승인**을 눌러야만 전송됩니다.
+* **자동 전환/재시도 금지:** 모델 거부(`appleGuardrail`), 자산 미준비, 타임아웃, 체인 실패 시 결과를 성공으로 위장하거나 Cloud/모의 응답으로 자동 fallback 및 재전송하지 않습니다.
+* **데이터 등급 정책 (v1 기준):**
 
-모델의 실제 사용 가능 여부는 `SystemLanguageModel.default.isAvailable`로 확인합니다. Apple Intelligence 설정·지역/언어·모델 준비 상태는 기기마다 다를 수 있습니다. 이 패키지는 이를 켜거나 변경하지 않습니다. macOS 13은 빌드 타깃이고 macOS 13에서 Apple 실모델을 실행할 수 있다는 뜻이 아닙니다.
+| 등급 | 로컬 모델 처리 | 외부 Cloud 전송 | 파일 쓰기 / 파생 저장 |
+| :--- | :---: | :---: | :--- |
+| **L1** | 허용 | **차단** (`deny-no-send`) | 불가 |
+| **L2** | 허용 | **조건부 허용** (전문 확인 + 1회 명시적 승인 후 지정 모델만 전송) | 불가 |
+| **L3** | 허용 | **차단** | 감사자 별도 승인 시 `0600` 권한 새 로컬 리비전 저장만 허용 |
 
-빌드·CPU 아키텍처·미지원 모델 차단 검사만 하려면:
+---
 
-```sh
-python3 demo.py --mode native-check
-```
+## 🛠 기타 개별 실행 및 진단 CLI 옵션
 
-앱을 열거나 모델을 호출하지 않습니다. arm64/x86_64 및 universal2를 검사합니다. Intel 바이너리의 실제 Intel 기기 실행이나 다른 OS 버전 실행을 증명하지 않습니다.
+| 명령어 | 설명 |
+| :--- | :--- |
+| `python3 demo.py --mode native` | 네이티브 정책 경로 UI 실행 (Apple 모델 비활성) |
+| `python3 demo.py --mode apple` | 실제 온디바이스 Apple 모델 단독 검증 UI 실행 |
+| `python3 demo.py --mode native-check` | 네이티브 빌드 및 CPU 아키텍처(`arm64`/`x86_64`) 검사 |
+| `python3 demo.py --mode cloud-build` | L2 OpenAI 단독 검증용 앱(`VAPE OpenAI Ready v2.app`) 빌드 |
+| `python3 demo.py --mode besu --tools-dir <경로>` | 사설 단일 validator QBFT Besu(Chain ID `2026112403`) 단독 실검증 |
+| `python3 -B native/SelectedFlow/check_apple_diagnostics.py` | Apple 프레임워크 실패/거부 진단 코드 합성 테스트 (호출 0회) |
+| `python3 -B native/SelectedFlow/check_handoff.py` | 파일 및 정책 경계 핸드오프 테스트 |
 
-## 4. 실제 Cloud 1회 검증 — 선택, 건너뛰어도 됨
+---
 
-**L2 실제 OpenAI 전송 구현이 포함되어 있습니다.** 다만 L1 Apple+Besu 창과 분리된 보안 입력 앱이며, 임의 선택 파일을 Cloud로 전송하는 기능은 아닙니다.
-
-| 구분 | L1 Apple + Besu | L2 실제 Cloud |
-|---|---|---|
-| 진입점 | `demo.py --mode unified --tools-dir …` | `demo.py --mode cloud-build` 후 출력된 앱을 사용자가 직접 열기 |
-| 합성 자료 | 새 실제 TXT를 macOS picker로 선택·L1 등록 | 앱에 내장된 고정 합성 L2 문구만 사용; 파일 읽기 없음 |
-| 처리 경로 | 기기의 실제 Apple 모델 | 고정 TLS `api.openai.com/v1/responses`, 소스에 고정된 데모 모델 `gpt-6.1-terra` |
-| 사전 조건 | Apple 모델 ready + 검증된 Besu 도구 | macOS 13+ 빌드 기준/CLT, 네트워크 허용, 사용자의 유효 API 키·해당 모델 접근·결제/사용량 조건 |
-| 승인 | 통합 1회 실행 버튼 | 키 준비와 실제 송출 승인 두 단계, 모두 사용자 직접 수행 |
-| 증거 | Ed25519/Merkle + 실제 로컬 Besu receipt/재조회 | Ed25519 로컬 감사만; 이 Cloud 사건의 Besu 앵커는 미포함 |
-
-Cloud 앱은 Apple Intelligence나 Besu를 요구하지 않습니다. 다른 Mac에서의 실제 실행과 계정의 모델 접근은 별도 확인이 필요합니다. 이 고정 모델은 조직 승인 모델이라는 주장이 아니라 사용자가 화면에서 이번 1회 사용을 승인하는 데모 기본값입니다.
-
-포함 소스: `native/ReadyCloud/Core.swift`의 `CloudEngine.executeL2`/`HTTPSCloud.send`, `App.swift`의 보안 입력·전송 버튼, `build.py`의 합성 테스트/빌드입니다. `demo.py`의 `cloud-build` 분기는 이 빌드 진입점을 새 임시 소스에서 호출합니다.
-
-사용자 실행 순서:
-
-1. 아래 `cloud-build`를 실행합니다. 빌드만 하며 창·외부 요청은 열지 않습니다.
-2. 출력된 `VAPE OpenAI Ready v2.app`만 Finder 등 정상 macOS 실행 경로로 직접 엽니다. 기존에 이미 전송한 창을 다시 실행하지 않습니다.
-3. 화면의 수신처·고정 모델·정확한 합성 문구를 확인합니다. API 사용료가 발생할 수 있습니다.
-4. 사용자 본인이 `NSSecureTextField`에 자신의 키를 입력하고 **1. 키 준비 — 아직 전송하지 않음**을 누릅니다. 이 단계의 API 호출은 0회입니다.
-5. 실제 송출을 원할 때만 **2. 위 모델·합성 내용의 OpenAI 1회 전송 승인**을 직접 누릅니다. 같은 실행에서 L1 차단을 기록한 뒤 고정 L2 요청 1회만 보냅니다. 실패/불확실하면 자동 재전송하지 않습니다.
-6. 결과는 새 앱 화면에서 직접 확인합니다. 키는 앱 메모리에만 두고 완료/취소 시 앱의 참조를 해제하며 파일·환경변수·감사·Keychain에 저장하지 않습니다. 키나 화면을 에이전트에게 보내지 않습니다.
-
-`store:false`, 도구 실행 없음, 리디렉션 거절, 앱 수준 재시도/모델 대체 없음이 적용됩니다. `store:false`를 사업자의 모든 보존이 없다는 보증으로 해석하지 않습니다. 계정/모델/네트워크 문제가 있으면 실패 또는 판정 불가로 표시하며 설정을 우회하지 않습니다.
-
-
-기본 데모/Apple 경로와 분리된 소스 `native/ReadyCloud`를 포함합니다(기준 `3594e5e1`). 빌드·합성 테스트만:
-
-```sh
-python3 demo.py --mode cloud-build
-```
-
-실제 외부 호출은 하지 않고 새 앱 경로만 출력합니다. 사용자가 나중에 그 앱을 직접 열고, 화면의 대상 모델·합성 내용을 확인한 뒤 **자신이 직접 보안 입력창에 키를 입력**하거나 취소합니다. 키 준비와 실제 1회 전송 승인은 다른 단계입니다. 키를 채팅·터미널 명령·환경변수·파일·스크린샷에 넣지 마세요. 에이전트는 입력창/클립보드/AX/화면/메모리를 검사하지 않습니다. 이미 다른 창에서 보냈다면 새 창에서 반복하지 마세요.
-
-계정 권한·모델 접근·요금·실제 수신은 **미확인**입니다. 이 패키지 제작 중 실호출은 없었습니다. 결과가 판정 불가면 자동 재시도하지 않습니다. 로컬 서명 기록은 원격 사업자 영수증이나 체인 앵커가 아닙니다. 세부 동작은 `native/ReadyCloud/README.md`를 확인하세요. 사용할 수 없으면 이 단계를 건너뜁니다.
-
-## 5. 로컬 Besu — 별도 도구가 있을 때만
-
-기본 모의 감사의 `file-mock-anchor`, Apple의 로컬 Ed25519 기록, 허가형 체인은 서로 다릅니다. Besu 도구/Java/Node/Solidity compiler/키/체인 상태를 ZIP에 넣지 않습니다. 설치·다운로드를 자동 실행하지 않습니다.
-
-이미 준비되고 검증된 도구 디렉터리가 있을 때만:
-
-```sh
-python3 demo.py --mode besu --tools-dir /path/to/verified-tools
-```
-
-`vape/ledger/local_exercise.py`가 요구하는 정확한 archive 이름·SHA256, 추출된 Besu/JDK, compiler가 모두 필요합니다. 현재 도구 레이아웃은 **macOS arm64 JDK에 고정**되어 Intel/Linux/Windows Besu 이식성을 주장하지 않습니다. 도구가 없으면 이 검증을 건너뛰세요. 새 임시 복사본에서 단일 validator 사설 시험 노드/일회 서명자를 만들고 자신의 노드만 종료합니다. 기존 노드/공개 체인에 연결하지 않습니다. 단일 validator 결과는 운영 합의/외부 신원 보증이 아닙니다. 기본 모의 자체 검증은 Besu를 실행하지 않습니다. 이 릴리스의 별도 실제 통합 실행 기록과 한계는 `portable/VALIDATION.md`를 참조하세요.
-
-## 보안·배포 한계
-
-macOS 앱은 로컬 ad-hoc 서명 빌드이며 Developer ID 서명·공증·배포 승인이 아닙니다. Gatekeeper/조직 정책으로 차단될 수 있습니다. 보안 설정을 끄거나 quarantine을 제거하는 안내는 제공하지 않습니다. 기존 CLT가 없으면 네이티브 단계는 실행되지 않습니다. 다른 물리 기기와 macOS 13/26 실기기 검증은 미실시입니다.
-
-현재 기기에서의 패키지 검증 범위는 `portable/VALIDATION.md`를 보세요. `portable/files.json`은 선별된 추적 소스 목록이며, `portable/PROVENANCE.md`는 코드 출처입니다. 소스 전용 비공개 배포 후보입니다. 원격 게시 여부는 실제 GitHub 저장소의 공개 범위와 커밋으로 확인해야 합니다.
-
-
-### Apple 준비 완료 이후의 실패 진단
-
-`ready`는 시스템 모델 가용성이고 추론 성공을 보장하지 않습니다. 콘솔은 실패 시 `stage`, `reason`, `localCalls`, `retryAutomatically:false`만 허용 목록으로 전달합니다. 프레임워크 오류 설명/컨텍스트/모델 원문은 로그나 상태 파일로 전달하지 않습니다.
-
-- `appleGuardrail` / `appleRefusal`: 시스템 안전 제한 또는 거부. 제한을 끄거나 다른 경로로 자동 전환하지 않습니다.
-- `appleUnsupportedLanguage`: 요청 언어/로케일 미지원.
-- `appleAssetsUnavailable`, `appleRateLimited`, `appleConcurrentRequest`: 시스템 자산/실행 상태 문제.
-- `appleContextLimit`, `appleUnsupportedGuide`, `appleDecoding`: 프레임워크 생성 제약.
-- `appleTimeout`, `appleEmptyResponse`, `appleFrameworkError`: 시간 초과/빈 결과/분류되지 않은 프레임워크 실패.
-
-추론 시도 후 실패는 `indeterminate`이며 성공/차단으로 바꾸지 않습니다. 새 실행을 자동 예약하지 않습니다. 서명된 완료 package가 없으면 Besu는 시작하지 않습니다. 진단 코드 수정은 파일 접근, 승인, 프롬프트, 네트워크 또는 시스템 guardrail을 완화하지 않습니다.
-
-합성 오류 테스트: `python3 -B native/SelectedFlow/check_apple_diagnostics.py` (모델 호출 0회). 기존 파일·정책 경계 테스트: `python3 -B native/SelectedFlow/check_handoff.py`.
-
-### Cloud 다음 요청과 등급 구분
-한 번 승인한 요청은 한 번만 전송합니다. 키는 모델 설정에서 macOS Keychain에 저장하여 다음 요청에도 재사용합니다. 다음 메시지의 본문·첨부는 매번 새로 확인하고 승인합니다. 이전 승인 재사용, 자동 재시도, 이전 대화 자동 전송은 하지 않습니다.
-
-현재 정책 v2는 조직별로 변경 가능한 데모 예시입니다. L1은 로컬만, L2는 읽기/로컬과 외부 송신 승인을 분리하며 허용된 모델·대상으로만 새 승인 후 송신합니다. L3는 로컬 처리와 별도 승인된 클라우드 처리가 가능하며, 쓰기는 감사자 화면에서 별도 승인한 새 로컬 리비전 저장만 지원합니다. 원본 덮어쓰기는 지원하지 않습니다. 숫자가 커진다고 앞 등급의 권한을 포함하지 않습니다. 읽기 허용은 반출 허용이 아닙니다. 실제 정책은 실행부가 등록소의 최신 등급·revision으로 검사합니다.
-
-### L3 승인된 로컬 리비전
-감사자에서 TXT 가져오기 → L3 저장 → **L3 변경 작성·비교 → 새 로컬 리비전 승인 저장**을 누릅니다. 원본을 바탕으로 변경안을 작성하고, 등록 ID·등급 revision·정책 버전과 삭제(-)/추가(+) 전체를 확인한 뒤 별도로 승인합니다. 네트워크 권한이 없는 파일 helper가 최신 등록·등급·정책·원본 지문을 다시 검사하고 개인 앱 컨테이너의 `FilePipeline-v1/LocalRevisions/<UUID>.txt`에 0600 권한으로 새 파일을 생성합니다. 원본과 기존 등록/모델 첨부는 그대로입니다. 파생 리비전은 자동 등록·모델 전송되지 않습니다.
-
-L2 쓰기, L1 및 미등록 Cloud 전송, 사용자 B의 로컬 쓰기는 차단합니다. 앱 내 신뢰된 데모 역할이며 외부 인증/OS 사용자 격리를 뜻하지 않습니다. 취소와 성공·차단·승인 재사용은 서명 감사에 기록되며 원문/경로는 감사와 체인에 넣지 않습니다. 저장된 감사 이력 재검증은 파생 파일 해시도 검사합니다. 로컬 저장은 Besu 앵커가 아닙니다. 저장 오류는 불확정이며 자동 재시도하지 않습니다. 현재 정책은 v2 코드 예시이며 UI에서 조직 정책을 편집하는 기능은 없습니다.
-
-### Keychain 저장 키
-보안 입력 → 키 저장·준비로 이 기기 Keychain에 저장합니다. iCloud 동기화는 사용하지 않습니다. 재시작 시 복원하며, OS 접근 승인이 필요하면 ‘저장된 키 사용’ 버튼으로 직접 승인하세요. 현재 ad-hoc 서명 앱은 재빌드 후 macOS가 접근 승인을 다시 요구할 수 있습니다. 이를 우회하지 않습니다.
-
-키 교체 입력은 저장 전 기존 항목을 보존하고, 저장된 키 삭제는 앱의 지정 항목만 삭제합니다. 요청 취소·앱 종료는 저장 키를 삭제하지 않습니다. 키 없음, Keychain 접근 거부/잠김, OpenAI 401/403 인증·접근 거부를 구분합니다. 인증 거부 후 현재 세션은 키 교체 전 재사용을 막습니다. 실제 키는 로그·인수·파일·IPC로 보내지 않습니다. UI/GUI QA는 독립적인 합성 Keychain namespace만 사용합니다.
-
-### 기본 정책 v2: L3 클라우드와 별도 로컬 쓰기
-L1은 로컬 전용, L2는 승인된 클라우드 읽기/분석만, L3는 승인된 클라우드 처리와 별도 승인된 원본 보존형 로컬 리비전 저장입니다. Cloud 실행은 감사자가 등록·허용한 L2/L3 첨부가 있어야 하며 등록 없는 외부 송신은 차단합니다. 허용 모델과 HTTPS 엔드포인트는 기존 고정값만 사용합니다. 정확한 프롬프트+첨부 본문 확인 뒤 매 요청 새로 승인하며 취소 시 승인 token을 폐기합니다. 승인 소비 시 최신 권한·정책·등급 revision·원본을 다시 확인합니다. Cloud 승인은 로컬 쓰기 승인이 아니며 자동 저장/재송신하지 않습니다.
-
-과거 v1 감사는 v1 규칙 그대로 검증하고 새 실행은 v2로 기록합니다. 기존 등록·사용자 설정·키를 마이그레이션하거나 바꾸지 않습니다. 조직별 별도 정책 편집 기능은 없으며 이 변경은 설치 소스의 기본 데모 정책입니다. 실제 OpenAI 송출 없이 독립 합성 수신기와 등록소에서 허용/차단을 검증했습니다.
+## ⚠️ 보안 및 검증 범위 안내
+* macOS 네이티브 앱은 로컬 **ad-hoc 서명** 빌드이며 Apple Developer ID 공증 배포 앱이 아닙니다. 보안 설정을 임의로 해제하지 마십시오.
+* 단일 validator 사설 Besu 노드 및 로컬 Ed25519 키 pinning은 동일 기기·동일 사용자 신뢰 경계 내에서의 감사 무결성 데모용이며, 다중 조직 합의나 원격 하드웨어 Attestation을 대체하지 않습니다.
+* 상세 검증 내역과 출처는 저장소 내 `portable/VALIDATION.md`, `portable/PROVENANCE.md`를 참조하세요.
