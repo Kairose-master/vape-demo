@@ -1,9 +1,9 @@
 import Foundation
 import CryptoKit
 final class FakeCloud:CloudSending {
- var calls=0;var fail=false;var malformed=false
+ var expectedText=CloudDemo.text;var calls=0;var fail=false;var malformed=false
  func send(key:String,body:Data,completion:@escaping(Int?,Data?,Bool)->Void){calls+=1;precondition(key=="synthetic-key-not-a-real-secret")
-  let p=try! JSONSerialization.jsonObject(with:body) as! [String:Any];precondition(p["input"] as? String == CloudDemo.text && p["model"] as? String == CloudDemo.model && p["store"] as? Bool == false && p["tools"]==nil)
+  let p=try! JSONSerialization.jsonObject(with:body) as! [String:Any];precondition(p["input"] as? String == expectedText && p["model"] as? String == CloudDemo.model && p["store"] as? Bool == false && p["tools"]==nil)
   if fail{completion(nil,nil,true);return}
   let valid:[String:Any]=["status":"completed","model":CloudDemo.model,"output":[["type":"message","role":"assistant","content":[["type":"output_text","text":"SYNTHETIC TEST RESPONSE"]]]]]
   completion(200,malformed ? Data("bad".utf8):try! JSONSerialization.data(withJSONObject:valid),false)
@@ -36,6 +36,13 @@ final class FakeCloud:CloudSending {
   let envelope=try JSONSerialization.jsonObject(with:Data(contentsOf:file)) as! [String:String]
   let metadata=Data(base64Encoded:envelope["metadata"]!)!;check(publicKey.isValidSignature(Data(base64Encoded:envelope["signature"]!)!,for:metadata))
   check(!String(decoding:metadata,as:UTF8.self).contains("synthetic-key-not-a-real-secret"));check(!String(decoding:metadata,as:UTF8.self).contains(CloudDemo.text))
+  let custom="SYNTHETIC USER PROMPT: describe a blue notebook."
+  let body=try JSONSerialization.jsonObject(with:CloudDemo.payload(text:custom)) as! [String:Any];check(body["input"] as? String==custom)
+  for invalid in ["",String(repeating:"x",count:65537)] {let fake=FakeCloud();let e=CloudEngine(transport:fake,audit:{_ in},text:invalid);e.executeL2(key:"synthetic-key-not-a-real-secret",approved:true){check($0.delivery=="not-started")};check(fake.calls==0)}
+  let customFake=FakeCloud();customFake.expectedText=custom;let customEngine=CloudEngine(transport:customFake,audit:{_ in},text:custom)
+  customEngine.executeL2(key:"synthetic-key-not-a-real-secret",approved:false){check($0.delivery=="not-started")};check(customFake.calls==0)
+  customEngine.executeL2(key:"synthetic-key-not-a-real-secret",approved:true){check($0.decision=="allow")};check(customFake.calls==1)
+  customEngine.executeL2(key:"synthetic-key-not-a-real-secret",approved:true){check($0.reason=="one-shot-consumed")};check(customFake.calls==1)
   print("PASS ready-cloud: \(checks) assertions; synthetic key + injected transport only; no API call")
  }
 }

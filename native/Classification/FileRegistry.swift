@@ -104,6 +104,15 @@ private struct RegistryState: Codable {
     var registrations = [PrivateRegistration]()
     var events = [ClassificationEvent]()
     var decisions = [TextPreparationDecision]()
+    var readers = [String:[String]]()
+    init(){}
+    enum CodingKeys:String,CodingKey {case schema,observedPolicyVersion,registrations,events,decisions,readers}
+    init(from decoder:Decoder)throws {
+        let c=try decoder.container(keyedBy:CodingKeys.self)
+        schema=try c.decode(Int.self,forKey:.schema);observedPolicyVersion=try c.decode(Int.self,forKey:.observedPolicyVersion)
+        registrations=try c.decode([PrivateRegistration].self,forKey:.registrations);events=try c.decode([ClassificationEvent].self,forKey:.events);decisions=try c.decode([TextPreparationDecision].self,forKey:.decisions)
+        readers=try c.decodeIfPresent([String:[String]].self,forKey:.readers) ?? [:]
+    }
 }
 
 final class FileClassificationRegistry {
@@ -149,6 +158,25 @@ final class FileClassificationRegistry {
         guard let i = state.registrations.firstIndex(where: {$0.id == id}) else { throw RegistryError.unregistered }
         guard state.registrations[i].owner == principal.id else { throw RegistryError.notOwner }
         return i
+    }
+    private func readIndex(_ id:UUID,_ principal:RegistryPrincipal)throws->Int {
+        guard !principal.id.isEmpty else{throw RegistryError.invalidPrincipal}
+        guard let i=state.registrations.firstIndex(where:{$0.id==id}) else{throw RegistryError.unregistered}
+        guard state.registrations[i].owner==principal.id || (state.readers[id.uuidString] ?? []).contains(principal.id) else{throw RegistryError.notOwner}
+        return i
+    }
+    func grantRead(resourceID:UUID,readers:[String],expectedRevision:Int,principal:RegistryPrincipal)throws->RegisteredFile {
+        lock.lock();defer{lock.unlock()};let snapshot=try capturePolicy(),i=try index(resourceID,principal)
+        guard state.registrations[i].revision==expectedRevision,readers.allSatisfy({!$0.isEmpty && $0.count<=80}) else{throw RegistryError.staleRevision}
+        _ = try inspectRegistered(i,version:snapshot.version,collectText:false)
+        let desired=Array(Set(readers)).sorted()
+        if (state.readers[resourceID.uuidString] ?? []) != desired {
+            var next=state;next.readers[resourceID.uuidString]=desired;next.registrations[i].revision+=1
+            let r=next.registrations[i]
+            next.events.append(ClassificationEvent(event_id:UUID(),resource_id:r.id,kind:"read_grant_changed",level:r.level,previous_level:r.level,classification_revision:r.revision,policy_version:snapshot.version,reason:nil))
+            try commit(next)
+        }
+        return descriptor(state.registrations[i],version:snapshot.version)
     }
     private func descriptor(_ record: PrivateRegistration, version: Int) -> RegisteredFile {
         RegisteredFile(resource_id: record.id, level: record.level, classification_revision: record.revision, policy_version: version)
@@ -237,11 +265,26 @@ final class FileClassificationRegistry {
             let record = PrivateRegistration(id: UUID(), owner: principal.id, bookmark: bookmark,
                                              fingerprint: fingerprint, level: level, revision: 1, active: true,
                                              isTextExtension: url.pathExtension.lowercased() == "txt", locationDigest: locationDigest(url))
-            var next = state; next.registrations.append(record)
+            var next = state
+            for index in next.registrations.indices where next.registrations[index].owner==principal.id && next.registrations[index].locationDigest==record.locationDigest && next.registrations[index].active {
+                next.registrations[index].active=false
+            }
+            next.registrations.append(record)
             next.events.append(ClassificationEvent(event_id: UUID(), resource_id: record.id, kind: "registered", level: level, previous_level: nil, classification_revision: 1, policy_version: snapshot.version, reason: nil))
             try commit(next)
             return descriptor(record, version: snapshot.version)
         }
+    }
+    func registered(principal:RegistryPrincipal)throws->[RegisteredFile] {
+        lock.lock();defer{lock.unlock()};let snapshot=try capturePolicy()
+        return state.registrations.filter{($0.owner==principal.id || (state.readers[$0.id.uuidString] ?? []).contains(principal.id)) && $0.active}.map{descriptor($0,version:snapshot.version)}
+    }
+    // Authoritative lookup: callers never supply the stored grade or revision.
+    func lookup(resourceID:UUID,principal:RegistryPrincipal)throws->RegisteredFile {
+        lock.lock();defer{lock.unlock()}
+        let snapshot=try capturePolicy(),i=try readIndex(resourceID,principal)
+        _ = try inspectRegistered(i,version:snapshot.version,collectText:false)
+        return descriptor(state.registrations[i],version:snapshot.version)
     }
     func changeLevel(resourceID: UUID, to level: RegisteredLevel, expectedRevision: Int, principal: RegistryPrincipal) throws -> RegisteredFile {
         lock.lock(); defer {lock.unlock()}
@@ -262,7 +305,7 @@ final class FileClassificationRegistry {
                              authorize: (RegisteredFile, String?) throws -> Void,
                              consume: (String, RegisteredFile, () throws -> RegisteredFile) throws -> Void) throws {
         lock.lock(); defer {lock.unlock()}
-        let i = try index(request.resource_id, principal)
+        let i = try readIndex(request.resource_id, principal)
         func current() throws -> RegisteredFile {
             let snapshot = try capturePolicy(), record = state.registrations[i]
             guard record.active else {throw RegistryError.needsRegistration}
@@ -291,7 +334,7 @@ final class FileClassificationRegistry {
     // Integration entrypoint: stale classification is rejected before resolving a bookmark or reading bytes.
     func prepareTextRevisionBound(_ request: ModelTextRequest, expectedRevision: Int, principal: RegistryPrincipal) throws -> PreparedModelText {
         lock.lock(); defer {lock.unlock()}
-        let i = try index(request.resource_id, principal)
+        let i = try readIndex(request.resource_id, principal)
         guard state.registrations[i].revision == expectedRevision else { throw RegistryError.staleRevision }
         return try prepareText(request, principal: principal)
     }
@@ -300,7 +343,7 @@ final class FileClassificationRegistry {
         let snapshot = try capturePolicy()
         // Invalid strings never enter history, so aliases/actions cannot smuggle arbitrary paths/text.
         guard request.action == "model_send", request.model_alias.range(of: "^[a-z][a-z0-9._-]{0,63}$", options: .regularExpression) != nil else { throw RegistryError.invalidRequest }
-        let i = try index(request.resource_id, principal)
+        let i = try readIndex(request.resource_id, principal)
         let record = state.registrations[i]
         var decisionReason: RegistryError?
         var text: String?

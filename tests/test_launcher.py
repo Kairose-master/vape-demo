@@ -77,3 +77,9 @@ class ConsoleTests(unittest.TestCase):
   self.assertEqual(v['reason'],'uncertain');self.assertEqual(v['stage'],'unknown');self.assertNotIn('output',v)
   v=safe_diagnostic({'reason':'appleGuardrail','stage':'apple-generation','localCalls':1})
   self.assertEqual(v['reason'],'appleGuardrail');self.assertFalse(v['retryAutomatically'])
+
+ def test_files_use_native_boundary_not_http_dispatch(self):
+  c=Console(None)
+  for action in ['select','save','lookup','verify','audit','preview','commit','local','role']:
+   with self.assertRaises(ValueError):c.request(action)
+  self.assertEqual(c.snapshot()['phase'],'idle')
