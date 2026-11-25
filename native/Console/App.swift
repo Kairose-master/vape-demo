@@ -12,6 +12,8 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
  private let prompt=PromptEditor(),reply=NSTextField(wrappingLabelWithString:"메시지를 입력하세요. 아직 모델을 호출하지 않았습니다."),route=NSPopUpButton()
  private let fileStatus=NSTextField(wrappingLabelWithString:"로컬 TXT를 가져온 뒤 등급을 저장하고 다시 조회하세요. 등록은 전송 승인이 아닙니다."),grade=NSPopUpButton()
  private var chatBusy=false
+ private var selectedRun:String?;private var signerPinned=false
+ private let anchorButton=NSButton(title:"같은 실행 Besu 앵커 · 독립 검증 (1회)",target:nil,action:nil)
  private var localStatus=NSTextField(wrappingLabelWithString:"아직 확인하지 않았습니다. 모델·체인·Cloud 실행 0회. 준비 상태부터 확인하세요.")
  private var mockStatus=NSTextField(wrappingLabelWithString:"명시적으로 실행하기 전에는 모의 결과도 없습니다.")
  private var localSession:URLSession!;private var endpoint:URL!;private var capability="";private var timer:Timer?
@@ -46,9 +48,10 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   label("무엇을 도와드릴까요? 모델은 ‘모델 설정’에서 선택합니다. 각 메시지는 별도 실행입니다. 감사자가 미리 등록·등급 저장한 파일만 아래 목록에서 첨부할 수 있습니다.",user)
   let editor=NSScrollView();editor.hasVerticalScroller=true;editor.borderType = .bezelBorder;editor.documentView=prompt;prompt.font = .systemFont(ofSize:17);prompt.isRichText=false;prompt.isVerticallyResizable=true;prompt.autoresizingMask = .width;prompt.textContainer?.widthTracksTextView=true
   user.addArrangedSubview(editor);editor.widthAnchor.constraint(equalTo:user.widthAnchor).isActive=true;editor.heightAnchor.constraint(equalToConstant:130).isActive=true
-  attachments.addItem(withTitle:"첨부 없음");user.addArrangedSubview(attachments)
+  attachments.addItem(withTitle:"첨부 없음");attachments.target=self;attachments.action=#selector(attachmentChanged);user.addArrangedSubview(attachments)
   user.addArrangedSubview(NSButton(title:"등록 파일 목록 새로고침",target:self,action:#selector(loadAttachments)))
   user.addArrangedSubview(NSButton(title:"메시지 보내기",target:self,action:#selector(sendPrompt)))
+  anchorButton.target=self;anchorButton.action=#selector(anchorSelected);anchorButton.isEnabled=false;user.addArrangedSubview(anchorButton)
   evidence(reply,user)
   let file=makeStack(filePage);heading("감사자 · 같은 파일의 보안 확인",file)
   label("① 로컬 TXT 가져오기 → ② 등급 저장 → ③ 저장된 등급 재조회 → ④ 정책·서명 감사 검증\n외부 업로드/모델 전송 없음. 파일이나 등급이 바뀌면 이전 검증은 현재 상태에 적용하지 않습니다.",file)
@@ -59,7 +62,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   file.addArrangedSubview(NSButton(title:"4. 같은 파일 정책·서명 감사 검증",target:self,action:#selector(verifyFile)))
   file.addArrangedSubview(NSButton(title:"사용자 B 읽기 권한 철회",target:self,action:#selector(revokeFile)))
   file.addArrangedSubview(NSButton(title:"저장된 감사 이력 재검증",target:self,action:#selector(fileAudit)))
-  label("선택 파일의 체인: 미기록 · 현재 이 파일을 위한 앵커 기능은 제공하지 않습니다. ‘감사·체인 상세’의 Besu 검증은 별도 합성 실행이며 이 파일의 체인 증거가 아닙니다.",file)
+  label("선택 파일은 사용자 첨부 → 실제 Apple 처리 → 같은 실행 Besu 앵커 버튼으로 연결합니다. 등급·파일이 바뀌면 앵커가 차단됩니다. 감사·체인 상세의 고정 합성 진단은 별도 실행입니다.",file)
   let auditTools=NSStackView();auditTools.orientation = .horizontal;auditTools.spacing=12
   auditTools.addArrangedSubview(NSButton(title:"감사·체인 상세",target:self,action:#selector(auditDetails)))
   auditTools.addArrangedSubview(NSButton(title:"명시적 모의 진단",target:self,action:#selector(mockDetails)));file.addArrangedSubview(auditTools)
@@ -123,6 +126,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
    print("PASS console UI: one native window, five screens, user screen selected, blank secure input, send disabled, sandbox loopback reachable, no model calls")
    NSApp.terminate(nil);return
   }
+  pinFileIdentity()
   selectPage(navigation[4])
   window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
   timer=Timer.scheduledTimer(withTimeInterval:1,repeats:true){[weak self] _ in self?.refresh()};refresh()
@@ -159,11 +163,35 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   }}.resume()
  }
  private func fileAction(_ action:String,level:Int?=nil){
+  attachmentChanged()
   var body:[String:Any]=["action":action];if let level=level{body["level"]=level}
   show("처리 중 · 이전 검증은 현재 상태에 적용하지 않습니다.",fileStatus)
   fileBridge.call(body){[weak self] result in guard let self=self else{return};if let data=try? JSONSerialization.data(withJSONObject:result,options:[.prettyPrinted,.sortedKeys]),let text=String(data:data,encoding:.utf8){self.show(text,self.fileStatus)};self.loadAttachments()}
  }
+ private func metadataPost(_ path:String,_ body:[String:Any],completion:@escaping([String:Any])->Void){
+  var request=URLRequest(url:endpoint.appendingPathComponent(path));request.httpMethod="POST";request.timeoutInterval=300;request.setValue("Bearer "+capability,forHTTPHeaderField:"Authorization");request.setValue("application/json",forHTTPHeaderField:"Content-Type");request.httpBody=try? JSONSerialization.data(withJSONObject:body)
+  localSession.dataTask(with:request){data,response,error in DispatchQueue.main.async{
+   guard error==nil,(response as? HTTPURLResponse)?.statusCode==200,let data=data,let result=try? JSONSerialization.jsonObject(with:data) as? [String:Any] else{completion(["status":"indeterminate","reason":"metadata-or-chain-boundary-failed","retryAutomatically":false]);return};completion(result)
+  }}.resume()
+ }
+ private func pinFileIdentity(){fileBridge.call(["action":"identity"]){[weak self] identity in
+  guard let self=self,let key=identity["publicKey"] as? String else{return}
+  self.metadataPost("file-identity",["publicKey":key]){result in self.signerPinned=result["status"] as? String=="pinned";self.anchorButton.isEnabled=self.signerPinned && self.selectedRun != nil}
+ }}
+ @objc private func anchorSelected(){
+  guard !chatBusy,signerPinned,let run=selectedRun else{return};anchorButton.isEnabled=false;chatBusy=true
+  fileBridge.call(["action":"anchor","runID":run]){[weak self] value in guard let self=self else{return}
+   guard let package=value["package"] as? [String:Any],package["runID"] as? String==run else{self.chatBusy=false;self.show("파일·등급 변경 또는 실행 검증 실패 · 앵커 차단",self.reply);return}
+   self.show("같은 선택 파일 실행의 서명 검증 → 실제 로컬 Besu → 별도 read-back 확인 중… 자동 재시도 없음",self.reply)
+   self.metadataPost("file-anchor",package){result in self.chatBusy=false
+    if result["status"] as? String=="verified" {self.fileBridge.call(["action":"receipt","receipt":result]){stored in if stored["status"] as? String != "saved" {self.show("체인 확인 완료 · 앱 감사 이력 보존은 판정 불가",self.reply)}}}
+    let data=try? JSONSerialization.data(withJSONObject:result,options:[.sortedKeys,.prettyPrinted]);self.show(data.flatMap{String(data:$0,encoding:.utf8)} ?? "판정 불가",self.reply)
+   }
+  }
+ }
+ @objc private func attachmentChanged(){selectedRun=nil;anchorButton.isEnabled=false}
  @objc private func loadAttachments(){
+  attachmentChanged()
   fileBridge.call(["action":"list"]){[weak self] result in guard let self=self else{return};self.attachedFiles=result["files"] as? [[String:Any]] ?? [];self.attachments.removeAllItems();self.attachments.addItem(withTitle:"첨부 없음")
    for file in self.attachedFiles {let id=file["resourceID"] as? String ?? "unknown";self.attachments.addItem(withTitle:"L\(file["level"] ?? "?") · "+id+" · r\(file["revision"] ?? "?")")}
   }
@@ -177,14 +205,14 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
  @objc private func verifyFile(){fileAction("verify")}
  @objc private func fileAudit(){fileAction("audit")}
  @objc private func sendPrompt(){
-  guard !chatBusy else{return};let text=prompt.string
+  guard !chatBusy else{return};selectedRun=nil;anchorButton.isEnabled=false;let text=prompt.string
   guard !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,text.utf8.count<=65536 else{show("메시지는 1~65536 UTF-8 바이트여야 합니다.",reply);return}
   if attachments.indexOfSelectedItem>0 {
    let file=attachedFiles[attachments.indexOfSelectedItem-1]
    var request:[String:Any]=["action":route.indexOfSelectedItem==0 ? "local":"preview","resourceID":file["resourceID"]!,"revision":file["revision"]!,"prompt":text]
    chatBusy=true;show("첨부 등록 ID와 현재 등급·파일 상태를 검사하고 있습니다…",reply)
    fileBridge.call(request){[weak self] result in guard let self=self else{return}
-    if request["action"] as? String=="local" {self.chatBusy=false;let text=result["output"] as? String ?? "";self.show(text.isEmpty ? "처리 거부/판정 불가: "+(result["reason"] as? String ?? "unknown") : text,self.reply);return}
+    if request["action"] as? String=="local" {self.chatBusy=false;self.selectedRun=result["anchorAvailable"] as? Bool==true ? result["runID"] as? String:nil;self.anchorButton.isEnabled=self.selectedRun != nil && self.signerPinned;let text=result["output"] as? String ?? "";self.show((text.isEmpty ? "처리 거부/판정 불가: "+(result["reason"] as? String ?? "unknown") : text)+"\n\n실행: "+(result["runID"] as? String ?? "unknown")+"\nCloud 정책: "+(result["cloudPolicy"] as? String ?? "unknown")+" · 외부 송출 0회\n체인: 아직 미기록 · 아래 버튼은 이 성공/실패 실행의 감사만 기록합니다",self.reply);return}
     guard result["status"] as? String=="approval-required",let body=result["body"] as? String,let token=result["token"] as? String else{self.chatBusy=false;self.show("클라우드 전송 차단: "+(result["reason"] as? String ?? "unverified"),self.reply);return}
     guard self.confirmCloud(body),!self.started,let credential=self.key else{self.chatBusy=false;self.show("승인 취소 또는 키 준비 필요 · 전송 0회",self.reply);return}
     request["action"]="commit";request["token"]=token
@@ -220,7 +248,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
     request.executeL2(key:credential,approved:true){[weak self] result in DispatchQueue.main.async{guard let self=self else{return};self.chatBusy=false;self.show(result.output ?? ("판정: "+result.decision+" · "+result.reason+" · 자동 재시도 없음"),self.reply)}}
    }catch{chatBusy=false;show("감사 기록 준비 실패 · 전송하지 않았습니다.",reply)}
  }
- @objc private func selectPage(_ sender:NSButton){pages.selectTabViewItem(at:sender.tag);for button in navigation{button.state=button===sender ? .on : .off}
+ @objc private func selectPage(_ sender:NSButton){guard !chatBusy else{return};pages.selectTabViewItem(at:sender.tag);for button in navigation{button.state=button===sender ? .on : .off}
   fileBridge.call(["action":"role","role":[0,2,3].contains(sender.tag) ? "auditor-a":"user-b"]){[weak self] _ in if sender.tag==4{self?.loadAttachments()}}
  }
  @objc private func readiness(){action("readiness")}

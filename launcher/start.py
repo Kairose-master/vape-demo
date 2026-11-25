@@ -37,6 +37,8 @@ def main():
     try:
         from native.Console.build import build
         app=build({'endpoint':'http://127.0.0.1:'+str(http.server_port),'capability':token,'qa':'true' if a.ui_test or a.gui_qa else 'false'})
+        from launcher.selected_anchor import SelectedAnchor
+        console.selected_anchor=SelectedAnchor(app.parent/'SelectedVerifier',tools)
         helper=app.parent/'VAPE File Registry.app/Contents/MacOS/FilePipeline'
         if a.ui_test:subprocess.run([str(helper),'--self-test'],check=True,env=__import__('demo').environment())
         to_read,to_write=os.pipe();from_read,from_write=os.pipe()

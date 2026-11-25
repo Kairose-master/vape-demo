@@ -24,8 +24,12 @@ def build(configuration):
     helper=run/'VAPE File Registry.app';exe=helper/'Contents/MacOS/FilePipeline';exe.parent.mkdir(parents=True)
     (helper/'Contents/Info.plist').write_bytes(plistlib.dumps(dict(CFBundleExecutable='FilePipeline',CFBundleIdentifier=('org.vape.console.fileregistry.qa.'+uuid.uuid4().hex if configuration.get('qa')=='true' else 'org.vape.console.fileregistry.v1'),CFBundleName='VAPE File Registry',CFBundlePackageType='APPL',CFBundleVersion='1',LSMinimumSystemVersion='13.0',LSUIElement=True)))
     permissions=run/'File.entitlements';permissions.write_bytes(plistlib.dumps({'com.apple.security.app-sandbox':True,'com.apple.security.files.user-selected.read-only':True,'com.apple.security.files.bookmarks.app-scope':True}))
-    files=['native/SelectedFlow/PrivateModelHandoff.swift','native/SelectedFlow/AppleLocalModel.swift','native/Classification/FileRegistry.swift','native/Classification/MacFileSelection.swift','native/Classification/PrivateRegistryStore.swift','native/Console/FilePipeline.swift']
+    files=['native/Console/SelectedEvidence.swift','native/SelectedFlow/PrivateModelHandoff.swift','native/SelectedFlow/AppleLocalModel.swift','native/Classification/FileRegistry.swift','native/Classification/MacFileSelection.swift','native/Classification/PrivateRegistryStore.swift','native/Console/FilePipeline.swift']
     subprocess.run(flags+[str(ROOT/p) for p in files]+['-o',str(exe)],check=True)
     subprocess.run(['codesign','--force','--sign','-','--timestamp=none','--options','runtime','--entitlements',str(permissions),str(helper)],check=True)
     subprocess.run(['codesign','--verify','--strict',str(helper)],check=True)
+    subprocess.run(flags+[str(ROOT/"native/Console/SelectedEvidence.swift"),str(ROOT/"native/Console/SelectedVerifier.swift"),"-o",str(run/"SelectedVerifier")],check=True)
+    if configuration.get("qa")=="true":
+        subprocess.run(flags+[str(ROOT/"native/Console/SelectedEvidence.swift"),str(ROOT/"native/Console/SelectedEvidenceTests.swift"),"-o",str(run/"SelectedEvidenceTests")],check=True)
+        subprocess.run([str(run/"SelectedEvidenceTests")],check=True)
     return app

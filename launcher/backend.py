@@ -29,6 +29,7 @@ def public_steps(package):
 
 class Console:
     def __init__(self, tools, probe=check, runner=None):
+        self.selected_anchor=None
         self.tools=tools; self.probe=probe; self.runner=runner or self.run
         self.lock=threading.Lock(); self.used=set()
         self.state={'phase':'idle','readiness':None,'jobs':{},'cloud':'native-only; no credentials accepted by backend'}
@@ -107,6 +108,15 @@ def server(console, token):
             self.reply(200,console.snapshot())
         def do_POST(self):
             if not self.authorized():return self.reply(403,{'error':'forbidden'})
+            if self.path in ('/file-identity','/file-anchor'):
+                try:
+                    size=int(self.headers.get('Content-Length','0'))
+                    if not 0<size<=65536 or self.headers.get('Transfer-Encoding') or console.selected_anchor is None:raise ValueError('Rejected')
+                    value=json.loads(self.rfile.read(size))
+                    if not isinstance(value,dict):raise ValueError('Rejected')
+                    if self.path=='/file-identity':return self.reply(200,console.selected_anchor.pin(value))
+                    return self.reply(200,console.selected_anchor.anchor(value))
+                except Exception:return self.reply(400,{'status':'indeterminate','reason':'signed-evidence-or-chain-verification-failed','retryAutomatically':False})
             if self.path!='/action':return self.reply(404,{'error':'not found'})
             try:
                 size=int(self.headers.get('Content-Length','0'))

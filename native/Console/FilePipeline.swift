@@ -21,6 +21,8 @@ struct SyntheticAccess:SelectedFileAccess {
 final class Pipeline {
  let root:URL,registry:FileClassificationRegistry,principal=RegistryPrincipal(id:"auditor-a"),consumer=RegistryPrincipal(id:"user-b"),access:SelectedFileAccess,key:Curve25519.Signing.PrivateKey
  var role="user-b"
+ fileprivate var runs=[String:([String:Any],RegisteredFile)]()
+ private var anchored=Set<String>()
  private var previews=[String:(RegisteredFile,String,String)]()
  init(synthetic:Bool,isolated:Bool=false)throws {
   let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].standardizedFileURL.resolvingSymlinksInPath()
@@ -48,6 +50,11 @@ final class Pipeline {
   try write(["metadata":manifest.base64EncodedString(),"signature":try key.signature(for:manifest).base64EncodedString()],"checkpoint.json")
   return e
  }
+ func track(_ name:String)throws {
+  var entries=try checkpoint();entries[name]=SelectedEvidence.hash(try Data(contentsOf:root.appendingPathComponent(name)))
+  let raw=try SelectedEvidence.bytes(entries)
+  try write(["metadata":raw.base64EncodedString(),"signature":try key.signature(for:raw).base64EncodedString()],"checkpoint.json")
+ }
  func checkpoint()throws->[String:String] {
   let url=root.appendingPathComponent("checkpoint.json")
   if !FileManager.default.fileExists(atPath:url.path){return [:]}
@@ -55,28 +62,75 @@ final class Pipeline {
   return entries
  }
  func audit(_ f:RegisteredFile)throws->[String:Any] {
-  let files=try FileManager.default.contentsOfDirectory(at:root,includingPropertiesForKeys:nil).filter{$0.lastPathComponent.hasPrefix("event-") && $0.pathExtension=="json"}
+  let files=try FileManager.default.contentsOfDirectory(at:root,includingPropertiesForKeys:nil).filter{($0.lastPathComponent.hasPrefix("event-") || $0.lastPathComponent.hasPrefix("run-") || $0.lastPathComponent.hasPrefix("receipt-")) && $0.pathExtension=="json"}
   var events=[[String:Any]]();var valid=true
   let entries=try checkpoint()
   if Set(entries.keys) != Set(files.map{$0.lastPathComponent}){valid=false}
   for file in files {
    let raw=try Data(contentsOf:file)
    if entries[file.lastPathComponent] != SHA256.hash(data:raw).map({String(format:"%02x",$0)}).joined(){valid=false}
+   if !file.lastPathComponent.hasPrefix("event-"){continue}
    guard let envelope=try JSONSerialization.jsonObject(with:Data(contentsOf:file)) as? [String:String],let metadata=envelope["metadata"],let signature=envelope["signature"],let data=Data(base64Encoded:metadata),let sig=Data(base64Encoded:signature),key.publicKey.isValidSignature(sig,for:data),let value=try JSONSerialization.jsonObject(with:data) as? [String:Any] else {valid=false;continue}
    if value["resourceID"] as? String==f.resource_id.uuidString{events.append(value)}
   }
-  return ["status":valid && !events.isEmpty ? "verified":"indeterminate","events":events,"scope":"기기 내 Ed25519 서명 · 외부 신뢰기관 아님","chain":"unanchored","anchorAvailable":false]
+  var executions=[[String:Any]]()
+  for file in try FileManager.default.contentsOfDirectory(at:root,includingPropertiesForKeys:nil) where file.lastPathComponent.hasPrefix("run-") && file.pathExtension=="json" {
+   guard let package=try JSONSerialization.jsonObject(with:Data(contentsOf:file)) as? [String:Any] else{valid=false;continue}
+   do{var proof=try SelectedEvidence.verify(package,publicKey:key.publicKey.rawRepresentation.base64EncodedString())
+    if proof["resourceID"] as? String==f.resource_id.uuidString {
+     proof["currentRevision"]=(proof["revision"] as? Int)==f.classification_revision
+     let receipt=root.appendingPathComponent("receipt-"+(proof["runID"] as! String)+".json")
+     if FileManager.default.fileExists(atPath:receipt.path){
+      guard let envelope=try JSONSerialization.jsonObject(with:Data(contentsOf:receipt)) as? [String:String],let m=envelope["metadata"],let s=envelope["signature"],let raw=Data(base64Encoded:m),let sig=Data(base64Encoded:s),key.publicKey.isValidSignature(sig,for:raw) else{throw RegistryError.corruptStore}
+      proof["chainReceipt"]=try JSONSerialization.jsonObject(with:raw)
+     }else{proof["chain"]="unanchored"}
+     executions.append(proof)
+    }
+   }catch{valid=false}
+  }
+  return ["status":valid && !events.isEmpty ? "verified":"indeterminate","executions":executions,"events":events,"scope":"기기 내 Ed25519 서명 · 외부 신뢰기관 아님","chain":executions.isEmpty ? "unanchored":"historical-observations-in-executions"]
  }
  func attached(_ input:[String:Any])throws->[String:Any] {
   guard role=="user-b" else{throw RegistryError.notOwner}
   guard let action=input["action"] as? String else{throw RegistryError.invalidRequest}
+  if action=="identity" {return ["publicKey":key.publicKey.rawRepresentation.base64EncodedString()]}
+  if action=="receipt" {
+   guard let receipt=input["receipt"] as? [String:Any],let run=receipt["runID"] as? String,let stored=runs[run],anchored.contains(run),receipt["status"] as? String=="verified",receipt["independentRead"] as? Bool==true,receipt["nodeStopped"] as? Bool==true,let transaction=receipt["transaction"] as? String,transaction.range(of:"^0x[0-9a-f]{64}$",options:.regularExpression) != nil else{throw RegistryError.invalidRequest}
+   let roots=try SelectedEvidence.verify(stored.0,publicKey:key.publicKey.rawRepresentation.base64EncodedString())
+   for field in ["runID","resourceID","revision","policyRoot","executionRoot"] {guard let observed=receipt[field],let expected=roots[field],String(describing:observed)==String(describing:expected) else{throw RegistryError.invalidRequest}}
+   // Receipt is a local verifier observation, not a signed remote consensus proof.
+   try write(SelectedEvidence.envelope(receipt,key:key),"receipt-"+run+".json");try track("receipt-"+run+".json");return ["status":"saved","runID":run]
+  }
+  if action=="anchor" {
+   guard let run=input["runID"] as? String,let stored=runs[run],!anchored.contains(run),try registry.lookup(resourceID:stored.1.resource_id,principal:consumer)==stored.1 else{throw RegistryError.staleRevision}
+   _ = try SelectedEvidence.verify(stored.0,publicKey:key.publicKey.rawRepresentation.base64EncodedString());anchored.insert(run);return ["package":stored.0]
+  }
   if action=="list" {return ["status":"loaded","files":try registry.registered(principal:consumer).map{describe($0)}]}
   guard let id=input["resourceID"] as? String,let uuid=UUID(uuidString:id),let revision=input["revision"] as? Int,let prompt=input["prompt"] as? String,!prompt.isEmpty,prompt.utf8.count<=8192 else{throw RegistryError.invalidRequest}
   let file=try registry.lookup(resourceID:uuid,principal:consumer);guard file.classification_revision==revision else{throw RegistryError.staleRevision}
   if action=="local" {
-   let handoff=PrivateModelHandoff(registry:registry,principal:consumer,configuration:{PrivateModelConfiguration(enabled:true,route:.local,model:"apple-system-default",destinationID:"apple-system-on-device",runtimeReady:{AppleLocalModel.available()},approval:{$0.resourceID==file.resource_id && $0.revision==file.classification_revision && $0.policyVersion==file.policy_version && $0.route == .local},dispatch:{value in try AppleLocalModel.respond(value,expectedDigest:value.binding.contentDigest!,request:prompt)},syntheticLoopbackOnly:false)},audit:{r in _ = try self.event(file,kind:"local_"+r.phase+"_"+r.decision)})
+   try save(file)
+   let run=UUID().uuidString
+   let prepared=try registry.prepareTextRevisionBound(ModelTextRequest(resourceID:file.resource_id,policyVersion:file.policy_version,modelAlias:"local"),expectedRevision:revision,principal:consumer)
+   var cloud="approval-required-no-send"
+   do{_ = try registry.prepareTextRevisionBound(ModelTextRequest(resourceID:file.resource_id,policyVersion:file.policy_version,modelAlias:"cloud"),expectedRevision:revision,principal:consumer);guard file.level == .two else{throw RegistryError.invalidRequest}}
+   catch RegistryError.denied {cloud="deny-no-send"}
+   let binding=SelectedEvidence.hash(Data((run+"\n"+prompt+"\n"+prepared.text).utf8))
+   var events=[[String:String]]()
+   func record(_ phase:String,_ decision:String,_ delivery:String,_ reason:String?=nil)throws {
+    let m:[String:Any]=["schema":1,"runID":run,"resourceID":file.resource_id.uuidString,"revision":revision,"policyVersion":file.policy_version,"level":file.level.rawValue,"binding":binding,"phase":phase,"decision":decision,"delivery":delivery,"cloudPolicy":cloud,"model":"apple-system-default","externalCalls":0,"reason":reason ?? (phase=="result" ? "completed":"pending")]
+    events.append(try SelectedEvidence.envelope(m,key:self.key))
+   }
+   try record("policy","allow","not-started")
+   let handoff=PrivateModelHandoff(registry:registry,principal:consumer,configuration:{PrivateModelConfiguration(enabled:true,route:.local,model:"apple-system-default",destinationID:"apple-system-on-device",runtimeReady:{AppleLocalModel.available()},approval:{$0.resourceID==file.resource_id && $0.revision==file.classification_revision && $0.policyVersion==file.policy_version && $0.route == .local},dispatch:{value in guard value.binding.contentDigest==SelectedEvidence.hash(Data(prepared.text.utf8)) else{throw RegistryError.needsRegistration};return try AppleLocalModel.respond(value,expectedDigest:value.binding.contentDigest!,request:prompt)},syntheticLoopbackOnly:false)},audit:{r in try record(r.phase,r.decision,r.delivery);_ = try self.event(file,kind:"local_"+r.phase+"_"+r.decision)})
    let result=handoff.execute(resource:file,route:.local)
-   return ["status":result.decision,"reason":result.reason,"delivery":result.delivery,"output":result.output ?? "","resource":describe(file)]
+   if events.count==2 && result.decision=="indeterminate" {try record("result",result.decision,result.delivery,result.reason)}
+   let package:[String:Any]=["runID":run,"events":events]
+   var reply:[String:Any]=["status":result.decision,"reason":result.reason,"delivery":result.delivery,"output":result.output ?? "","resource":describe(file),"runID":run,"cloudPolicy":cloud,"externalCalls":0,"anchorAvailable":false]
+   if events.count==3, (try? SelectedEvidence.verify(package,publicKey:key.publicKey.rawRepresentation.base64EncodedString())) != nil {
+    _ = try SelectedEvidence.verify(package,publicKey:key.publicKey.rawRepresentation.base64EncodedString());runs[run]=(package,file);try write(package,"run-"+run+".json");try track("run-"+run+".json");reply["anchorAvailable"]=true
+   }
+   return reply
   }
   guard action=="preview" || action=="commit",file.level == .two else{throw RegistryError.denied}
   let prepared=try registry.prepareTextRevisionBound(ModelTextRequest(resourceID:file.resource_id,policyVersion:file.policy_version,modelAlias:"cloud"),expectedRevision:revision,principal:consumer)
@@ -146,7 +200,9 @@ final class Pipeline {
     do{_ = try p.registry.prepareText(ModelTextRequest(resourceID:first.resource_id,policyVersion:1,modelAlias:"local"),principal:RegistryPrincipal(id:"user-c"));fatalError("C consumed ungranted ID")}catch{}
     do{_ = try p.attached(["action":"preview","resourceID":first.resource_id.uuidString,"revision":first.classification_revision,"prompt":"SYNTHETIC summarize"]);fatalError("L1 cloud accepted")}catch{}
     p.role="auditor-a";_ = try p.run("verify",level:nil);_ = try p.run("save",level:2);let second=try p.selected()
-    p.role="user-b";do{_ = try p.attached(["action":"preview","resourceID":first.resource_id.uuidString,"revision":first.classification_revision,"prompt":"SYNTHETIC summarize"]);fatalError("Stale grade accepted")}catch{}
+    p.runs["SYNTHETIC-STALE-ANCHOR"]=([:],first)
+    p.role="user-b";do{_ = try p.attached(["action":"anchor","runID":"SYNTHETIC-STALE-ANCHOR"]);fatalError("Stale anchor accepted")}catch{}
+    do{_ = try p.attached(["action":"preview","resourceID":first.resource_id.uuidString,"revision":first.classification_revision,"prompt":"SYNTHETIC summarize"]);fatalError("Stale grade accepted")}catch{}
     let preview=try p.attached(["action":"preview","resourceID":second.resource_id.uuidString,"revision":second.classification_revision,"prompt":"SYNTHETIC summarize"]);precondition(preview["status"] as? String=="approval-required")
     p.role="auditor-a";_ = try p.run("revoke",level:nil);p.role="user-b"
     do{_ = try p.attached(["action":"commit","resourceID":second.resource_id.uuidString,"revision":second.classification_revision,"prompt":"SYNTHETIC summarize","token":preview["token"]!]);fatalError("Revoked grant consumed")}catch{}
@@ -158,7 +214,7 @@ final class Pipeline {
     try original.write(to:eventFile);try FileManager.default.removeItem(at:eventFile);let missing=try p.audit(f);precondition(missing["status"] as? String=="indeterminate");try original.write(to:eventFile)
     let sample=p.root.appendingPathComponent("Samples/VAPE-Synthetic.txt");try Data("CHANGED SYNTHETIC".utf8).write(to:sample)
     do{_ = try p.run("verify",level:nil);fatalError("Changed file accepted")}catch{}
-    print("{\"status\":\"passed\",\"checks\":14,\"modelCalls\":0,\"picker\":\"synthetic-injected\",\"roles\":\"A grants B; B write denied; C denied; stale and revoked rejected\"}");return
+    print("{\"status\":\"passed\",\"checks\":15,\"modelCalls\":0,\"picker\":\"synthetic-injected\",\"roles\":\"A grants B; B write denied; C denied; stale and revoked rejected\"}");return
    }
    let p=try Pipeline(synthetic:false,isolated:CommandLine.arguments.contains("--qa"))
    repeat {
@@ -167,7 +223,7 @@ final class Pipeline {
      let raw=Data(line.utf8);guard raw.count<=131072,let input=try JSONSerialization.jsonObject(with:raw) as? [String:Any],let action=input["action"] as? String else{throw RegistryError.invalidRequest}
      let result:[String:Any]
      if action=="role" {guard Set(input.keys)==Set(["action","role"]),let role=input["role"] as? String,["auditor-a","user-b"].contains(role) else{throw RegistryError.invalidRequest};p.role=role;result=["status":"selected","role":role,"scope":"trusted demo role; not external authentication"]}
-     else if ["list","local","preview","commit"].contains(action){guard Set(input.keys).isSubset(of:["action","resourceID","revision","prompt","token"]) else{throw RegistryError.invalidRequest};result=try p.attached(input)}
+     else if ["identity","receipt","anchor","list","local","preview","commit"].contains(action){guard Set(input.keys).isSubset(of:["action","resourceID","revision","prompt","token","runID","receipt"]) else{throw RegistryError.invalidRequest};result=try p.attached(input)}
      else{guard Set(input.keys).isSubset(of:["action","level"]) else{throw RegistryError.invalidRequest};result=try p.run(action,level:input["level"] as? Int)}
      print(String(decoding:try JSONSerialization.data(withJSONObject:result,options:.sortedKeys),as:UTF8.self));fflush(stdout)
     } catch{let reason=(error as? RegistryError)?.rawValue ?? "indeterminate";print("{\"status\":\"indeterminate\",\"reason\":\""+reason+"\",\"verification\":\"invalidated\",\"chain\":\"unanchored\"}");fflush(stdout)}

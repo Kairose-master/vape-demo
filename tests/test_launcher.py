@@ -83,3 +83,26 @@ class ConsoleTests(unittest.TestCase):
   for action in ['select','save','lookup','verify','audit','preview','commit','local','role']:
    with self.assertRaises(ValueError):c.request(action)
   self.assertEqual(c.snapshot()['phase'],'idle')
+
+class SelectedAnchorTests(unittest.TestCase):
+    def test_selected_anchor_fail_closed_and_one_shot(self):
+        import base64
+        import tempfile
+        from unittest.mock import patch
+        from launcher.selected_anchor import SelectedAnchor
+        with tempfile.TemporaryDirectory() as directory:
+            calls=[]
+            service=SelectedAnchor(Path(directory)/'Verifier',Path(directory),runner=lambda **kw:calls.append(kw))
+            key=base64.b64encode(bytes(32)).decode()
+            self.assertEqual(service.pin({'publicKey':key})['status'],'pinned')
+            with self.assertRaises(ValueError):service.pin({'publicKey':base64.b64encode(bytes([1])*32).decode()})
+            with patch.object(service,'verify',side_effect=ValueError('bad signature')):
+                with self.assertRaises(ValueError):service.anchor({'events':[]})
+            self.assertEqual(calls,[])
+            roots={'status':'verified','runID':'SYNTHETIC-RUN','revision':2,'policyVersion':1,'policyRoot':'a'*64,'executionRoot':'b'*64}
+            def failed(**kw):calls.append('called');raise ValueError('uncertain submission')
+            service.runner=failed
+            with patch.object(service,'verify',return_value=roots):
+                with self.assertRaises(ValueError):service.anchor({})
+                with self.assertRaises(ValueError):service.anchor({})
+            self.assertEqual(calls,['called'])
