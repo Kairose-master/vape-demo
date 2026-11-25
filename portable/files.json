@@ -17,6 +17,7 @@
   "native/Classification/check.py",
   "native/Console/App.swift",
   "native/Console/ChatWorkspace.swift",
+  "native/Console/CredentialStore.swift",
   "native/Console/FileBridge.swift",
   "native/Console/FilePipeline.swift",
   "native/Console/SelectedEvidence.swift",

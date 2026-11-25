@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import Security
 final class PromptEditor:NSTextView {override func draggingEntered(_ sender:NSDraggingInfo)->NSDragOperation{[]};override func performDragOperation(_ sender:NSDraggingInfo)->Bool{false}}
 final class ConsoleBackground:NSView {override func draw(_ dirtyRect:NSRect){NSColor.windowBackgroundColor.setFill();dirtyRect.fill();super.draw(dirtyRect)}}
 final class ConsoleSyntheticTransport:CloudSending {
@@ -11,6 +12,8 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
  private var fileBridge:FileBridge!;private let attachments=NSPopUpButton();private var attachedFiles=[[String:Any]]()
  private let prompt=PromptEditor(),reply=NSTextField(wrappingLabelWithString:"메시지를 입력하세요. 아직 모델을 호출하지 않았습니다."),route=NSPopUpButton()
  private let fileStatus=NSTextField(wrappingLabelWithString:"로컬 TXT를 가져온 뒤 등급을 저장하고 다시 조회하세요. 등록은 전송 승인이 아닙니다."),grade=NSPopUpButton()
+ private var credentialStore=CredentialStore()
+ private var credentialRejected=false
  private var chatBusy=false
  private var chat:ChatWorkspace!
  private var selectedRun:String?;private var signerPinned=false
@@ -23,6 +26,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
  private let input=NSSecureTextField(),status=NSTextField(wrappingLabelWithString:"")
  private let sendButton=NSButton();private var window:NSWindow!;private var engine:CloudEngine!;private var key:String?;private var started=false
  func applicationDidFinishLaunching(_ notification:Notification){
+  if CommandLine.arguments.contains("--gui-qa"){credentialStore=CredentialStore(service:"org.vape.console.synthetic."+UUID().uuidString)}
   NSApp.mainMenu=SecurePaste.menu()
   do{fileBridge=try FileBridge()}catch{NSApp.terminate(nil);return}
   do {
@@ -88,15 +92,19 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   route.addItems(withTitles:["Apple · 기기 내 로컬","OpenAI · 외부 클라우드"]);stack.addArrangedSubview(route)
   label("Apple 준비 상태: "+(AppleLocalModel.available() ? "ready":"사용 불가")+"\nOpenAI 모델: "+CloudDemo.model+" · 별도 API 키 필요\n외부 송신은 메시지마다 정확한 내용을 표시하는 확인창에서 직접 승인해야 합니다. 자동 전환·재시도 없음.",stack)
   label("현재 데모 정책 v1 · 조직별 변경 가능한 정책 예시\nL1: 로컬 처리만 · 외부 전송 차단\nL2: 읽기/로컬 처리 · 허용된 대상에 매 요청 별도 승인 후 외부 전송\nL3: 로컬 처리 · 외부 전송 차단 · 감사자에서 변경 비교·별도 승인 후 새 로컬 리비전 저장\n읽기 허용은 외부 전송 허용이 아닙니다. 등급 숫자는 기능의 포함 관계가 아닙니다.",stack)
-  stack.addArrangedSubview(NSButton(title:"새 Cloud 요청 준비 · 이전 승인 재사용 안 함",target:self,action:#selector(newCloudRequest)))
+  stack.addArrangedSubview(NSButton(title:"새 Cloud 요청 준비 · 저장된 키 재사용",target:self,action:#selector(newCloudRequest)))
+  stack.addArrangedSubview(NSButton(title:"저장된 키 사용 · Keychain 접근 승인",target:self,action:#selector(loadSavedKey)))
+  stack.addArrangedSubview(NSButton(title:"키 교체 입력",target:self,action:#selector(replaceKey)))
+  stack.addArrangedSubview(NSButton(title:"저장된 키 삭제",target:self,action:#selector(deleteSavedKey)))
   input.placeholderString="API 키 직접 입력 · 채팅으로 보내지 마세요";input.stringValue="";input.widthAnchor.constraint(equalToConstant:730).isActive=true;input.setAccessibilityElement(false);stack.addArrangedSubview(input)
   stack.addArrangedSubview(NSButton(title:"키 붙여넣기 · 보안 필드에만",target:self,action:#selector(pasteKey)))
-  stack.addArrangedSubview(NSButton(title:"1. 키 준비 — 아직 전송하지 않음",target:self,action:#selector(prepare)))
+  stack.addArrangedSubview(NSButton(title:"키 저장·준비 — macOS Keychain · 전송 없음",target:self,action:#selector(prepare)))
   sendButton.title="2. 위 모델·합성 내용의 OpenAI 1회 전송 승인";sendButton.target=self;sendButton.action=#selector(send);sendButton.isEnabled=false;// Sending happens only from the user screen after exact-content confirmation.
-  stack.addArrangedSubview(NSButton(title:"취소 · 키 버리기",target:self,action:#selector(cancel)))
+  stack.addArrangedSubview(NSButton(title:"현재 요청 취소 · 저장된 키 유지",target:self,action:#selector(cancel)))
   status.stringValue="키 준비 전 · 실제 호출 0회. 사용자 화면의 전송 버튼에서 내용을 확인한 뒤 승인하세요.";status.widthAnchor.constraint(equalToConstant:730).isActive=true;stack.addArrangedSubview(status)
   tabs.selectTabViewItem(at:4)
   if uiTest {
+   credentialStore=CredentialStore(service:"org.vape.console.synthetic."+UUID().uuidString)
    window.setFrameOrigin(NSPoint(x:-20000,y:-20000));window.orderBack(nil);window.display()
    RunLoop.current.run(until:Date().addingTimeInterval(0.2))
    window.contentView!.layoutSubtreeIfNeeded()
@@ -144,18 +152,24 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
    precondition(synthetic.calls==0 && engine.calls==0 && input.stringValue.isEmpty && sendButton.isEnabled)
    send();send();precondition(synthetic.calls==1 && engine.calls==1 && key==nil && !sendButton.isEnabled)
    cancel();precondition(input.stringValue.isEmpty && !sendButton.isEnabled)
-   let oldRun=engine.runID;newCloudRequest();precondition(engine.runID != oldRun && !started && key==nil && input.isEnabled && synthetic.calls==1)
+   let oldRun=engine.runID;newCloudRequest();precondition(engine.runID != oldRun && !started && key != nil && !input.isEnabled && synthetic.calls==1)
    chatBusy=true;let pendingRun=engine.runID;newCloudRequest();precondition(engine.runID==pendingRun);chatBusy=false
-   input.stringValue="SYNTHETIC-UI-TEST-NOT-A-REAL-KEY";prepare();precondition(synthetic.calls==1)
+   precondition(key != nil && input.stringValue.isEmpty && synthetic.calls==1)
    sendCloud("SYNTHETIC second independently approved request",key:key!);sendCloud("must not repeat",key:"SYNTHETIC-UI-TEST-NOT-A-REAL-KEY")
    precondition(synthetic.calls==2 && engine.calls==1 && key==nil)
    RunLoop.current.run(until:Date().addingTimeInterval(0.1))
-   precondition(!chatBusy);cancel();newCloudRequest();precondition(!started && key==nil && input.isEnabled && synthetic.calls==2)
+   precondition(!chatBusy);cancel();newCloudRequest();precondition(!started && key != nil && !input.isEnabled && synthetic.calls==2)
+   let reopened=CredentialStore(service:credentialStore.service);precondition((try? reopened.read())=="SYNTHETIC-UI-TEST-NOT-A-REAL-KEY")
+   replaceKey();input.stringValue="SYNTHETIC-REPLACEMENT-NOT-A-REAL-KEY";prepare();precondition((try? reopened.read())=="SYNTHETIC-REPLACEMENT-NOT-A-REAL-KEY")
+   credentialRejected=true;key=nil;restoreKey(interactive:false);precondition(key==nil)
+   deleteSavedKey();precondition((try? reopened.read())==nil && key==nil && !credentialRejected)
+   print("PASS isolated Keychain: save/read/reopen/replace/delete; auth-rejected blocked; no real credentials or calls")
    print("PASS explicit fresh Cloud request: new run, new key, no prepare transmission, busy reset blocked, consumed request cannot repeat, cancel recoverable")
    print("PASS synthetic UI prepare=0, explicit send=1, repeat=0, cancel clears; real calls=0")
    print("PASS console UI: one native window, five screens, user screen selected, blank secure input, send disabled, sandbox loopback reachable, no model calls")
    NSApp.terminate(nil);return
   }
+  restoreKey(interactive:false)
   pinFileIdentity()
   selectPage(navigation[4])
   window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
@@ -239,6 +253,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
  @objc private func sendPrompt(){
   guard !chatBusy else{return};selectedRun=nil;anchorButton.isEnabled=false;let text=prompt.string
   guard !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,text.utf8.count<=65536 else{chat.notice("메시지는 1~65536 UTF-8 바이트여야 합니다.");return}
+  if route.indexOfSelectedItem==1 && started{newCloudRequest()}
   chat.begin(text,route:route.indexOfSelectedItem==0 ? "Apple 로컬":"OpenAI 클라우드",attachment:attachments.indexOfSelectedItem>0 ? attachments.titleOfSelectedItem ?? "":"");prompt.string=""
   if attachments.indexOfSelectedItem>0 {
    let file=attachedFiles[attachments.indexOfSelectedItem-1]
@@ -247,7 +262,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
    fileBridge.call(request){[weak self] result in guard let self=self else{return}
     if request["action"] as? String=="local" {self.chatBusy=false;self.selectedRun=result["anchorAvailable"] as? Bool==true ? result["runID"] as? String:nil;self.anchorButton.isEnabled=self.selectedRun != nil && self.signerPinned;let text=result["output"] as? String ?? "";self.show((text.isEmpty ? "처리 거부/판정 불가: "+(result["reason"] as? String ?? "unknown") : text)+"\n\n실행: "+(result["runID"] as? String ?? "unknown")+"\nCloud 정책: "+(result["cloudPolicy"] as? String ?? "unknown")+" · 외부 송출 0회\n체인: 아직 미기록 · 아래 버튼은 이 성공/실패 실행의 감사만 기록합니다",self.reply);return}
     guard result["status"] as? String=="approval-required",let body=result["body"] as? String,let token=result["token"] as? String else{self.chatBusy=false;self.show("클라우드 전송 차단: "+(result["reason"] as? String ?? "unverified"),self.reply);return}
-    guard !self.started,let credential=self.key else{self.chatBusy=false;self.show("모델 설정에서 새 Cloud 요청 준비 → 키 준비가 필요합니다. 이번 요청 전송 0회",self.reply);return}
+    guard !self.credentialRejected,let credential=self.key else{self.chatBusy=false;self.show(self.credentialRejected ? "OpenAI 인증/접근 거부 · 키 교체 또는 권한 확인 필요 · 전송 0회":"저장된 키 없음 또는 Keychain 접근 필요 · 모델 설정에서 확인하세요 · 전송 0회",self.reply);return}
     guard self.confirmCloud(body) else{self.chatBusy=false;self.show("사용자가 승인 취소 · 이번 요청 전송 0회",self.reply);return}
     request["action"]="commit";request["token"]=token
     self.fileBridge.call(request){[weak self] grant in guard let self=self else{return};guard grant["status"] as? String=="approved-once",let current=grant["body"] as? String,current==body else{self.chatBusy=false;self.show("파일·등급·정책 변경 또는 승인 무효 · 전송 0회",self.reply);return};self.sendCloud(body,key:credential)}
@@ -265,7 +280,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
     DispatchQueue.main.async{self?.chatBusy=false;if let self=self{self.show(answer,self.reply)}}
    }
   } else {
-   guard !started,let credential=key else{show("모델 설정에서 새 Cloud 요청 준비 → 키를 직접 준비하세요. 이전 승인으로 재전송하지 않습니다.",reply);return}
+   guard !credentialRejected,let credential=key else{show(credentialRejected ? "OpenAI 인증 거부 · 모델 설정에서 키를 교체하세요. 자동 재시도 없음":"저장된 키 없음 또는 Keychain 접근 불가 · 모델 설정에서 확인하세요.",reply);return}
    guard confirmCloud(text) else{show("승인 취소 · 외부 송출 0회",reply);return}
    sendCloud(text,key:credential)
   }
@@ -280,7 +295,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
    started=true;key=nil;input.stringValue="";sendButton.isEnabled=false;chatBusy=true
    do{let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0];let audit=try CloudAudit(support.appendingPathComponent("PromptAudit-"+UUID().uuidString));let request=CloudEngine(transport:uiTest ? synthetic : HTTPSCloud(),audit:{try audit.append($0)},text:text);self.engine=request
     show("승인된 메시지 1회 전송 중…",reply)
-    request.executeL2(key:credential,approved:true){[weak self] result in DispatchQueue.main.async{guard let self=self else{return};self.chatBusy=false;self.status.stringValue="요청 종료 · 키 폐기됨. 다음 메시지는 새 Cloud 요청 준비 후 새 키 준비·승인이 필요합니다.";self.show(result.output ?? ("판정: "+result.decision+" · "+result.reason+" · 자동 재시도 없음"),self.reply)}}
+    request.executeL2(key:credential,approved:true){[weak self] result in DispatchQueue.main.async{guard let self=self else{return};self.chatBusy=false;self.credentialRejected=result.reason=="http-status-401" || result.reason=="http-status-403";self.status.stringValue=self.credentialRejected ? "OpenAI 인증/접근 거부 · 키 교체 또는 계정 권한 확인 필요 · 자동 재시도 없음":"요청 종료 · 키는 Keychain에 유지됩니다. 다음 메시지도 별도 승인합니다.";self.show(result.output ?? ("판정: "+result.decision+" · "+result.reason+" · 자동 재시도 없음"),self.reply)}}
    }catch{chatBusy=false;show("감사 기록 준비 실패 · 전송하지 않았습니다.",reply)}
  }
  @objc private func selectPage(_ sender:NSButton){guard !chatBusy else{return};pages.selectTabViewItem(at:sender.tag);for button in navigation{button.state=button===sender ? .on : .off}
@@ -293,15 +308,26 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
  @objc private func newCloudRequest(){
   guard !chatBusy else{return}
   key=nil;input.stringValue="";sendButton.isEnabled=false;input.isEnabled=false
-  do{let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0];let audit=try CloudAudit(support.appendingPathComponent("CloudAudit-"+UUID().uuidString));engine=CloudEngine(transport:uiTest ? synthetic : HTTPSCloud(),audit:{try audit.append($0)});started=false;input.isEnabled=true;status.stringValue="새 요청 준비됨 · 전송 0회. 키를 다시 준비한 후 이번 내용만 새로 승인하세요. 이전 요청 재시도 아님."}
+  do{let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0];let audit=try CloudAudit(support.appendingPathComponent("CloudAudit-"+UUID().uuidString));engine=CloudEngine(transport:uiTest ? synthetic : HTTPSCloud(),audit:{try audit.append($0)});started=false;input.isEnabled=true;if !credentialRejected{restoreKey(interactive:false)};status.stringValue=credentialRejected ? "인증 거부된 키 · 교체 필요":"새 요청 준비됨 · 이전 승인은 사용하지 않습니다. "+(key==nil ? "Keychain 키 접근 필요":"저장된 키 준비됨 · 새 내용 승인 필요")}
   catch{started=true;status.stringValue="새 요청 감사 준비 실패 · 전송 차단"}
  }
- @objc private func pasteKey(){SecurePaste.userAction(enabled:!started && key==nil && input.isEnabled,focusSecureField:{self.window.makeFirstResponder(self.input)},dispatchStandardPaste:{NSApp.sendAction(Selector(("paste:")),to:nil,from:self.input)})}
- @objc private func prepare(){guard !started,key==nil else{return};let value=input.stringValue;guard CloudDemo.keyFormat(value) else{status.stringValue="키 형식을 확인하세요. 호출 0회.";return};key=value;input.stringValue="";input.isEnabled=false;sendButton.isEnabled=true;status.stringValue="키 준비됨 · 호출 0회. 사용자 화면에서 전송 내용을 확인해 승인하세요."}
+ @objc private func pasteKey(){SecurePaste.userAction(enabled:!chatBusy && key==nil && input.isEnabled,focusSecureField:{self.window.makeFirstResponder(self.input)},dispatchStandardPaste:{NSApp.sendAction(Selector(("paste:")),to:nil,from:self.input)})}
+ private func restoreKey(interactive:Bool){
+  guard !chatBusy,!credentialRejected else{return}
+  do{let value=try credentialStore.read(interactive:interactive);guard CloudDemo.keyFormat(value) else{throw CredentialFailure(status:errSecDecode)};key=value;input.stringValue="";input.isEnabled=false;sendButton.isEnabled=true;status.stringValue="저장된 Keychain 키 준비됨 · 외부 송출 없음 · 매 요청 새 승인 필요"}
+  catch{key=nil;input.isEnabled=true;status.stringValue=(error as? CredentialFailure)?.message ?? "Keychain 읽기 실패"}
+ }
+ @objc private func loadSavedKey(){guard !chatBusy else{return};restoreKey(interactive:true)}
+ @objc private func replaceKey(){guard !chatBusy else{return};key=nil;input.stringValue="";input.isEnabled=true;status.stringValue="새 키를 보안 필드에 입력하고 저장하세요. 저장 전 기존 Keychain 항목은 유지됩니다."}
+ @objc private func deleteSavedKey(){guard !chatBusy else{return};do{try credentialStore.delete();key=nil;credentialRejected=false;input.stringValue="";input.isEnabled=true;sendButton.isEnabled=false;status.stringValue="저장된 키 삭제됨 · 전송 없음"}catch{status.stringValue=(error as? CredentialFailure)?.message ?? "Keychain 삭제 실패"}}
+ @objc private func prepare(){guard !chatBusy else{return};let value=input.stringValue;guard CloudDemo.keyFormat(value) else{status.stringValue="키 형식을 확인하세요. 호출 0회.";return}
+  do{try credentialStore.save(value);credentialRejected=false;key=value;started=false;input.stringValue="";input.isEnabled=false;sendButton.isEnabled=true;status.stringValue="Keychain 저장됨 · 호출 0회 · 메시지별 전송 승인 필요"}
+  catch{input.stringValue="";key=nil;status.stringValue=(error as? CredentialFailure)?.message ?? "Keychain 저장 실패"}
+ }
  @objc private func send(){guard !started,let credential=key else{return};started=true;key=nil;input.stringValue="";sendButton.isEnabled=false;status.stringValue="1등급 차단 및 의도 기록 후 합성 2등급 요청을 1회 실행 중…"
   engine.executeL2(key:credential,approved:true){[weak self] result in DispatchQueue.main.async{guard let self=self else{return};self.status.stringValue="별도 Cloud runID: \(self.engine.runID) · 정책 v1 · 서명 메타데이터 감사 (Besu 아님)\nL1 Cloud 호출 0회 · L2 시도 \(self.engine.calls)회\n결과: \(result.decision) / \(result.delivery) / \(result.reason)\n키 참조 해제 · 자동 재시도 없음\n"+(result.output ?? "응답을 확인하지 못했습니다. 재전송하지 않습니다.")}}
  }
  @objc private func cancel(){key=nil;input.stringValue="";input.isEnabled=false;sendButton.isEnabled=false;started=true;engine.cancel();status.stringValue="취소 · 키 참조 해제. 진행 중이었다면 수신 여부는 판정 불가이며 재시도하지 않습니다."}
  func windowWillClose(_ notification:Notification){timer?.invalidate();localSession.invalidateAndCancel();cancel();NSApp.terminate(nil)}
 }
-@main enum Main {static func main(){let delegate=ConsoleApp();let app=NSApplication.shared;app.setActivationPolicy(.regular);app.delegate=delegate;app.run()}}
+@main enum Main {static func main(){if CredentialProbe.run(){return};let delegate=ConsoleApp();let app=NSApplication.shared;app.setActivationPolicy(.regular);app.delegate=delegate;app.run()}}
