@@ -91,7 +91,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   heading("모델 설정",stack)
   route.addItems(withTitles:["Apple · 기기 내 로컬","OpenAI · 외부 클라우드"]);stack.addArrangedSubview(route)
   label("Apple 준비 상태: "+(AppleLocalModel.available() ? "ready":"사용 불가")+"\nOpenAI 모델: "+CloudDemo.model+" · 별도 API 키 필요\n외부 송신은 메시지마다 정확한 내용을 표시하는 확인창에서 직접 승인해야 합니다. 자동 전환·재시도 없음.",stack)
-  label("현재 데모 정책 v1 · 조직별 변경 가능한 정책 예시\nL1: 로컬 처리만 · 외부 전송 차단\nL2: 읽기/로컬 처리 · 허용된 대상에 매 요청 별도 승인 후 외부 전송\nL3: 로컬 처리 · 외부 전송 차단 · 감사자에서 변경 비교·별도 승인 후 새 로컬 리비전 저장\n읽기 허용은 외부 전송 허용이 아닙니다. 등급 숫자는 기능의 포함 관계가 아닙니다.",stack)
+  label("현재 데모 정책 v2 · 조직별 변경 가능한 정책 예시\nL1: 로컬 처리만 · 외부 전송 차단\nL2: 읽기/로컬 처리 · 허용된 대상에 매 요청 별도 승인 후 외부 전송\nL3: 로컬/승인된 클라우드 처리 · 감사자에서 변경 비교·별도 승인 후 새 로컬 리비전 저장\n읽기 허용은 외부 전송 허용이 아닙니다. 등급 숫자는 기능의 포함 관계가 아닙니다.",stack)
   stack.addArrangedSubview(NSButton(title:"새 Cloud 요청 준비 · 저장된 키 재사용",target:self,action:#selector(newCloudRequest)))
   stack.addArrangedSubview(NSButton(title:"저장된 키 사용 · Keychain 접근 승인",target:self,action:#selector(loadSavedKey)))
   stack.addArrangedSubview(NSButton(title:"키 교체 입력",target:self,action:#selector(replaceKey)))
@@ -263,9 +263,9 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
     if request["action"] as? String=="local" {self.chatBusy=false;self.selectedRun=result["anchorAvailable"] as? Bool==true ? result["runID"] as? String:nil;self.anchorButton.isEnabled=self.selectedRun != nil && self.signerPinned;let text=result["output"] as? String ?? "";self.show((text.isEmpty ? "처리 거부/판정 불가: "+(result["reason"] as? String ?? "unknown") : text)+"\n\n실행: "+(result["runID"] as? String ?? "unknown")+"\nCloud 정책: "+(result["cloudPolicy"] as? String ?? "unknown")+" · 외부 송출 0회\n체인: 아직 미기록 · 아래 버튼은 이 성공/실패 실행의 감사만 기록합니다",self.reply);return}
     guard result["status"] as? String=="approval-required",let body=result["body"] as? String,let token=result["token"] as? String else{self.chatBusy=false;self.show("클라우드 전송 차단: "+(result["reason"] as? String ?? "unverified"),self.reply);return}
     guard !self.credentialRejected,let credential=self.key else{self.chatBusy=false;self.show(self.credentialRejected ? "OpenAI 인증/접근 거부 · 키 교체 또는 권한 확인 필요 · 전송 0회":"저장된 키 없음 또는 Keychain 접근 필요 · 모델 설정에서 확인하세요 · 전송 0회",self.reply);return}
-    guard self.confirmCloud(body) else{self.chatBusy=false;self.show("사용자가 승인 취소 · 이번 요청 전송 0회",self.reply);return}
+    guard self.confirmCloud(body) else{request["action"]="cancel-preview";request["token"]=token;self.fileBridge.call(request){_ in self.chatBusy=false;self.show("사용자가 승인 취소 · 승인 폐기 · 이번 요청 전송 0회",self.reply)};return}
     request["action"]="commit";request["token"]=token
-    self.fileBridge.call(request){[weak self] grant in guard let self=self else{return};guard grant["status"] as? String=="approved-once",let current=grant["body"] as? String,current==body else{self.chatBusy=false;self.show("파일·등급·정책 변경 또는 승인 무효 · 전송 0회",self.reply);return};self.sendCloud(body,key:credential)}
+    self.fileBridge.call(request){[weak self] grant in guard let self=self else{return};guard grant["status"] as? String=="approved-once",let current=grant["body"] as? String,current==body else{self.chatBusy=false;self.show("파일·등급·정책 변경 또는 승인 무효 · 전송 0회",self.reply);return};guard let resource=grant["resource"] as? [String:Any],let level=resource["level"] as? Int,[2,3].contains(level),let version=resource["policyVersion"] as? Int,version==2 else{self.chatBusy=false;self.show("정책 판정 검증 실패 · 전송 0회",self.reply);return};self.sendCloud(body,key:credential,level:level,policyVersion:version)}
    }
    return
   }
@@ -280,20 +280,18 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
     DispatchQueue.main.async{self?.chatBusy=false;if let self=self{self.show(answer,self.reply)}}
    }
   } else {
-   guard !credentialRejected,let credential=key else{show(credentialRejected ? "OpenAI 인증 거부 · 모델 설정에서 키를 교체하세요. 자동 재시도 없음":"저장된 키 없음 또는 Keychain 접근 불가 · 모델 설정에서 확인하세요.",reply);return}
-   guard confirmCloud(text) else{show("승인 취소 · 외부 송출 0회",reply);return}
-   sendCloud(text,key:credential)
+   show("미등록 외부 전송 차단 · 감사자가 등록하고 허용한 L2/L3 파일을 첨부하세요. 전송 0회",reply)
   }
  }
  private func confirmCloud(_ text:String)->Bool {
-   let alert=NSAlert();alert.messageText="OpenAI 외부 전송 1회 승인";alert.informativeText="대상: "+CloudDemo.endpoint.absoluteString+"\n모델: "+CloudDemo.model+"\n아래 메시지와 첨부가 표시된 경우 그 본문 전체를 1회 전송합니다. 등록 파일은 현재 L2일 때만 허용됩니다.";let review=NSScrollView(frame:NSRect(x:0,y:0,width:560,height:260));let body=NSTextView(frame:review.bounds);body.string=text;body.isEditable=false;body.isSelectable=true;body.font = .systemFont(ofSize:15);body.isVerticallyResizable=true;body.autoresizingMask = .width;body.textContainer?.widthTracksTextView=true;review.hasVerticalScroller=true;review.documentView=body;alert.accessoryView=review;alert.addButton(withTitle:"이 내용 1회 전송 승인");alert.addButton(withTitle:"취소")
+   let alert=NSAlert();alert.messageText="OpenAI 외부 전송 1회 승인";alert.informativeText="대상: "+CloudDemo.endpoint.absoluteString+"\n모델: "+CloudDemo.model+"\n아래 메시지와 첨부가 표시된 경우 그 본문 전체를 1회 전송합니다. 등록 파일은 현재 L2 또는 L3일 때만 허용됩니다. 쓰기 승인은 별도입니다.";let review=NSScrollView(frame:NSRect(x:0,y:0,width:560,height:260));let body=NSTextView(frame:review.bounds);body.string=text;body.isEditable=false;body.isSelectable=true;body.font = .systemFont(ofSize:15);body.isVerticallyResizable=true;body.autoresizingMask = .width;body.textContainer?.widthTracksTextView=true;review.hasVerticalScroller=true;review.documentView=body;alert.accessoryView=review;alert.addButton(withTitle:"이 내용 1회 전송 승인");alert.addButton(withTitle:"취소")
    return alert.runModal() == .alertFirstButtonReturn
 
  }
- private func sendCloud(_ text:String,key credential:String){
+ private func sendCloud(_ text:String,key credential:String,level:Int=2,policyVersion:Int=2){
    guard !started else{return}
    started=true;key=nil;input.stringValue="";sendButton.isEnabled=false;chatBusy=true
-   do{let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0];let audit=try CloudAudit(support.appendingPathComponent("PromptAudit-"+UUID().uuidString));let request=CloudEngine(transport:uiTest ? synthetic : HTTPSCloud(),audit:{try audit.append($0)},text:text);self.engine=request
+   do{let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0];let audit=try CloudAudit(support.appendingPathComponent("PromptAudit-"+UUID().uuidString));let request=CloudEngine(transport:uiTest ? synthetic : HTTPSCloud(),audit:{try audit.append($0)},text:text,level:level,policyVersion:policyVersion);self.engine=request
     show("승인된 메시지 1회 전송 중…",reply)
     request.executeL2(key:credential,approved:true){[weak self] result in DispatchQueue.main.async{guard let self=self else{return};self.chatBusy=false;self.credentialRejected=result.reason=="http-status-401" || result.reason=="http-status-403";self.status.stringValue=self.credentialRejected ? "OpenAI 인증/접근 거부 · 키 교체 또는 계정 권한 확인 필요 · 자동 재시도 없음":"요청 종료 · 키는 Keychain에 유지됩니다. 다음 메시지도 별도 승인합니다.";self.show(result.output ?? ("판정: "+result.decision+" · "+result.reason+" · 자동 재시도 없음"),self.reply)}}
    }catch{chatBusy=false;show("감사 기록 준비 실패 · 전송하지 않았습니다.",reply)}

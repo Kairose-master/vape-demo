@@ -8,7 +8,7 @@ enum CloudDemo {
  static let text="SYNTHETIC VAPE TEST: A fictional library ordered three blue notebooks for its reading club. Delivery is on Friday. Summarize this note in one short Korean sentence."
  static func payload(text:String = CloudDemo.text)throws->Data {try JSONSerialization.data(withJSONObject:["model":model,"input":text,"store":false,"stream":false,"max_output_tokens":256,"reasoning":["effort":"none"]],options:.sortedKeys)}
  static func permits(level:Int,action:String="model_send",destination:String="cloud-model",model:String=CloudDemo.model,approved:Bool)->Bool {
-  level==2 && action=="model_send" && destination=="cloud-model" && model==CloudDemo.model && approved
+  [2,3].contains(level) && action=="model_send" && destination=="cloud-model" && model==CloudDemo.model && approved
  }
  static func keyFormat(_ value:String)->Bool {value.count>=20 && value.count<512 && value.utf8.allSatisfy{$0>=33 && $0<=126}}
 }
@@ -41,22 +41,22 @@ final class HTTPSCloud:NSObject,CloudSending,URLSessionDataDelegate {
 }
 final class CloudEngine {
  private let lock=NSRecursiveLock();private var used=false;private let transport:CloudSending
- private let audit:(CloudEvent)throws->Void;private let text:String;let runID=UUID();private(set) var calls=0
- init(transport:CloudSending,audit:@escaping(CloudEvent)throws->Void,text:String = CloudDemo.text){self.transport=transport;self.audit=audit;self.text=text}
+ private let audit:(CloudEvent)throws->Void;private let text:String;private let requestLevel:Int;private let policyVersion:Int;let runID=UUID();private(set) var calls=0
+ init(transport:CloudSending,audit:@escaping(CloudEvent)throws->Void,text:String = CloudDemo.text,level:Int=2,policyVersion:Int=2){self.transport=transport;self.audit=audit;self.text=text;self.requestLevel=level;self.policyVersion=policyVersion}
  private func record(_ level:Int,_ phase:String,_ decision:String,_ delivery:String,_ reason:String)throws {
-  try audit(CloudEvent(eventID:UUID(),runID:runID,phase:phase,level:level,policyVersion:1,model:CloudDemo.model,destination:"cloud-model",decision:decision,delivery:delivery,reason:reason))
+  try audit(CloudEvent(eventID:UUID(),runID:runID,phase:phase,level:level,policyVersion:policyVersion,model:CloudDemo.model,destination:"cloud-model",decision:decision,delivery:delivery,reason:reason))
  }
  func executeL2(key:String,approved:Bool,completion:@escaping(CloudResult)->Void){
   lock.lock();defer{lock.unlock()}
   guard !used else{completion(CloudResult(decision:"deny",delivery:"not-started",reason:"one-shot-consumed",output:nil));return}
-  guard approved,CloudDemo.keyFormat(key),!text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,text.utf8.count<=65536 else{completion(CloudResult(decision:"deny",delivery:"not-started",reason:"approval-or-key-missing",output:nil));return}
+  guard CloudDemo.permits(level:requestLevel,approved:approved),CloudDemo.keyFormat(key),!text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,text.utf8.count<=65536 else{completion(CloudResult(decision:"deny",delivery:"not-started",reason:"approval-or-key-missing",output:nil));return}
   used=true
   do {
    // Same evidence run: hard L1 boundary, no transport call, then explicitly approved fixed L2 fixture.
-   guard !CloudDemo.permits(level:1,approved:true),CloudDemo.permits(level:2,approved:approved) else{throw CocoaError(.fileReadUnknown)}
+   guard !CloudDemo.permits(level:1,approved:true),CloudDemo.permits(level:requestLevel,approved:approved) else{throw CocoaError(.fileReadUnknown)}
    try record(1,"result","deny","not-started","L1-cloud-forbidden")
    guard calls==0 else{throw CocoaError(.fileReadUnknown)}
-   try record(2,"intent","indeterminate","not-started","explicit-single-L2-synthetic-approval")
+   try record(requestLevel,"intent","indeterminate","not-started","explicit-single-registered-cloud-approval")
    let body=try CloudDemo.payload(text:text);calls+=1
    transport.send(key:key,body:body){[self] status,data,failed in
     lock.lock();defer{lock.unlock()}
@@ -68,7 +68,7 @@ final class CloudEngine {
      let texts=parts.filter{$0["type"] as? String == "output_text"}.compactMap{$0["text"] as? String}
      if !refusal,!texts.isEmpty {output=texts.joined(separator:"\n");decision="allow";reason="completed"}else{reason="refusal-or-no-text"}
     }else if let status=status {reason="http-status-\(status)"}
-    do{try record(2,"result",decision,delivery,reason)}catch{output=nil;decision="indeterminate";reason="result-audit-failed"}
+    do{try record(requestLevel,"result",decision,delivery,reason)}catch{output=nil;decision="indeterminate";reason="result-audit-failed"}
     completion(CloudResult(decision:decision,delivery:delivery,reason:reason,output:output))
    }
   }catch{completion(CloudResult(decision:"indeterminate",delivery:"not-started",reason:"intent-or-preflight-failed",output:nil))}

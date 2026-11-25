@@ -26,7 +26,7 @@ final class FakeCloud:CloudSending {
    let encoded=String(decoding:try JSONEncoder().encode(events),as:UTF8.self)
    for secret in ["synthetic-key-not-a-real-secret",CloudDemo.text,"SYNTHETIC TEST RESPONSE","/Users/"]{check(!encoded.contains(secret))}
   }
-  check(!CloudDemo.permits(level:1,approved:true));check(CloudDemo.permits(level:2,approved:true));check(!CloudDemo.permits(level:3,approved:true))
+  check(!CloudDemo.permits(level:1,approved:true));check(CloudDemo.permits(level:2,approved:true));check(CloudDemo.permits(level:3,approved:true))
   check(!CloudDemo.permits(level:2,action:"write",approved:true));check(!CloudDemo.permits(level:2,action:"tool_send",approved:true));check(!CloudDemo.permits(level:2,destination:"other",approved:true));check(!CloudDemo.permits(level:2,model:"other",approved:true))
   check(CloudDemo.endpoint.scheme=="https" && CloudDemo.endpoint.host=="api.openai.com" && CloudDemo.endpoint.path=="/v1/responses")
   let directory=URL(fileURLWithPath:CommandLine.arguments[1]);let audit=try CloudAudit(directory)
@@ -43,6 +43,12 @@ final class FakeCloud:CloudSending {
   customEngine.executeL2(key:"synthetic-key-not-a-real-secret",approved:false){check($0.delivery=="not-started")};check(customFake.calls==0)
   customEngine.executeL2(key:"synthetic-key-not-a-real-secret",approved:true){check($0.decision=="allow")};check(customFake.calls==1)
   customEngine.executeL2(key:"synthetic-key-not-a-real-secret",approved:true){check($0.reason=="one-shot-consumed")};check(customFake.calls==1)
+  let l3=FakeCloud();l3.expectedText=custom;var l3Events=[CloudEvent]();let l3Engine=CloudEngine(transport:l3,audit:{l3Events.append($0)},text:custom,level:3,policyVersion:2)
+  l3Engine.executeL2(key:"synthetic-key-not-a-real-secret",approved:false){check($0.delivery=="not-started")};check(l3.calls==0)
+  l3Engine.executeL2(key:"synthetic-key-not-a-real-secret",approved:true){check($0.decision=="allow")};check(l3.calls==1)
+  check(l3Events.map{$0.level}==[1,3,3] && l3Events.allSatisfy{$0.policyVersion==2})
+  l3Engine.executeL2(key:"synthetic-key-not-a-real-secret",approved:true){check($0.reason=="one-shot-consumed")};check(l3.calls==1)
+  check(!CloudDemo.permits(level:3,action:"write",approved:true));check(!CloudDemo.permits(level:3,model:"other",approved:true));check(!CloudDemo.permits(level:3,destination:"other",approved:true))
   print("PASS ready-cloud: \(checks) assertions; synthetic key + injected transport only; no API call")
  }
 }

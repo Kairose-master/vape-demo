@@ -20,6 +20,8 @@ import CryptoKit
   var bad=good;var events=good["events"] as! [[String:String]];events[1]["signature"]="AA==";bad["events"]=events;rejects(bad)
   rejects(good,Curve25519.Signing.PrivateKey().publicKey.rawRepresentation.base64EncodedString())
   for grade in [2,3] {var changed=metadata;for i in changed.indices{changed[i]["level"]=grade;changed[i]["cloudPolicy"]=grade==2 ? "approval-required-no-send":"deny-no-send"};_ = try SelectedEvidence.verify(package(changed),publicKey:publicKey);count+=1}
+  for grade in [1,2,3] {var changed=metadata;for i in changed.indices{changed[i]["level"]=grade;changed[i]["policyVersion"]=2;changed[i]["cloudPolicy"]=grade==1 ? "deny-no-send":"approval-required-no-send"};let v2=try SelectedEvidence.verify(package(changed),publicKey:publicKey);precondition(v2["policyVersion"] as? Int==2);count+=1}
+  var mixed=metadata;mixed[2]["policyVersion"]=2;rejects(try package(mixed))
   var failed=metadata;failed[2]["decision"]="indeterminate";failed[2]["delivery"]="unknown";failed[2]["reason"]="appleGuardrail"
   let failure=try SelectedEvidence.verify(package(failed),publicKey:publicKey);precondition(failure["localDecision"] as? String=="indeterminate");count+=1
   print("PASS selected signed evidence: \(count) assertions; synthetic only; no model or chain calls")
