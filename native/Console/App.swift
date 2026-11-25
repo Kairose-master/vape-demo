@@ -62,6 +62,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   file.addArrangedSubview(NSButton(title:"2. 등급 저장 · 사용자 B에게 읽기 허용",target:self,action:#selector(saveGrade)))
   file.addArrangedSubview(NSButton(title:"3. 실제 저장된 등급 조회",target:self,action:#selector(lookupGrade)))
   file.addArrangedSubview(NSButton(title:"4. 같은 파일 정책·서명 감사 검증",target:self,action:#selector(verifyFile)))
+  file.addArrangedSubview(NSButton(title:"L3 변경 작성·비교 → 새 로컬 리비전 승인 저장",target:self,action:#selector(editRevision)))
   file.addArrangedSubview(NSButton(title:"사용자 B 읽기 권한 철회",target:self,action:#selector(revokeFile)))
   file.addArrangedSubview(NSButton(title:"저장된 감사 이력 재검증",target:self,action:#selector(fileAudit)))
   label("선택 파일은 사용자 첨부 → 실제 Apple 처리 → 같은 실행 Besu 앵커 버튼으로 연결합니다. 등급·파일이 바뀌면 앵커가 차단됩니다. 감사·체인 상세의 고정 합성 진단은 별도 실행입니다.",file)
@@ -71,7 +72,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   evidence(fileStatus,file)
   let local=makeStack(localPage)
   heading("읽기 허용 ≠ 반출 허용",local)
-  label("L1: Cloud 차단 · Apple 기기 내 처리 → 서명/Merkle → 새 사설 Besu 거래 → 별도 RPC 재조회\nL2: 읽기와 외부 송신 분리 · 오른쪽 OpenAI 탭에서 별도 1회 승인\nL3: 쓰기 별도 승인 · 이 콘솔에서는 실행하지 않음",local)
+  label("L1: Cloud 차단 · Apple 기기 내 처리 → 서명/Merkle → 새 사설 Besu 거래 → 별도 RPC 재조회\nL2: 읽기와 외부 송신 분리 · 오른쪽 OpenAI 탭에서 별도 1회 승인\nL3: 감사자에서 변경 비교·별도 승인 후 새 로컬 리비전 저장 · 원본 보존",local)
   label("실제 경로 · 고정 합성 TXT만 사용 · 사용자 파일 선택 대역을 사용하는 검증 하네스입니다.\nApple와 Besu가 모두 ready일 때만 통합 실행합니다. 사용 불가 시 자동 대체하지 않습니다.",local)
   addLocal("1. 준비 상태 확인 · 추론/거래 0회",#selector(readiness),local)
   addLocal("2. L1 차단 → 실제 Apple → 실제 Besu (합성 1회)",#selector(apple),local)
@@ -86,7 +87,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   heading("모델 설정",stack)
   route.addItems(withTitles:["Apple · 기기 내 로컬","OpenAI · 외부 클라우드"]);stack.addArrangedSubview(route)
   label("Apple 준비 상태: "+(AppleLocalModel.available() ? "ready":"사용 불가")+"\nOpenAI 모델: "+CloudDemo.model+" · 별도 API 키 필요\n외부 송신은 메시지마다 정확한 내용을 표시하는 확인창에서 직접 승인해야 합니다. 자동 전환·재시도 없음.",stack)
-  label("현재 데모 정책 v1 · 조직별 변경 가능한 정책 예시\nL1: 로컬 처리만 · 외부 전송 차단\nL2: 읽기/로컬 처리 · 허용된 대상에 매 요청 별도 승인 후 외부 전송\nL3: 로컬 처리 · 외부 전송 차단 · 쓰기는 별도 승인이 필요하며 현재 미구현\n읽기 허용은 외부 전송 허용이 아닙니다. 등급 숫자는 기능의 포함 관계가 아닙니다.",stack)
+  label("현재 데모 정책 v1 · 조직별 변경 가능한 정책 예시\nL1: 로컬 처리만 · 외부 전송 차단\nL2: 읽기/로컬 처리 · 허용된 대상에 매 요청 별도 승인 후 외부 전송\nL3: 로컬 처리 · 외부 전송 차단 · 감사자에서 변경 비교·별도 승인 후 새 로컬 리비전 저장\n읽기 허용은 외부 전송 허용이 아닙니다. 등급 숫자는 기능의 포함 관계가 아닙니다.",stack)
   stack.addArrangedSubview(NSButton(title:"새 Cloud 요청 준비 · 이전 승인 재사용 안 함",target:self,action:#selector(newCloudRequest)))
   input.placeholderString="API 키 직접 입력 · 채팅으로 보내지 마세요";input.stringValue="";input.widthAnchor.constraint(equalToConstant:730).isActive=true;input.setAccessibilityElement(false);stack.addArrangedSubview(input)
   stack.addArrangedSubview(NSButton(title:"키 붙여넣기 · 보안 필드에만",target:self,action:#selector(pasteKey)))
@@ -192,10 +193,11 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   }}.resume()
  }
  private func fileAction(_ action:String,level:Int?=nil){
+  guard !chatBusy else{return};chatBusy=true
   attachmentChanged()
   var body:[String:Any]=["action":action];if let level=level{body["level"]=level}
   show("처리 중 · 이전 검증은 현재 상태에 적용하지 않습니다.",fileStatus)
-  fileBridge.call(body){[weak self] result in guard let self=self else{return};if let data=try? JSONSerialization.data(withJSONObject:result,options:[.prettyPrinted,.sortedKeys]),let text=String(data:data,encoding:.utf8){self.show(text,self.fileStatus)};self.loadAttachments()}
+  fileBridge.call(body){[weak self] result in guard let self=self else{return};self.chatBusy=false;if let data=try? JSONSerialization.data(withJSONObject:result,options:[.prettyPrinted,.sortedKeys]),let text=String(data:data,encoding:.utf8){self.show(text,self.fileStatus)};self.loadAttachments()}
  }
  private func metadataPost(_ path:String,_ body:[String:Any],completion:@escaping([String:Any])->Void){
   var request=URLRequest(url:endpoint.appendingPathComponent(path));request.httpMethod="POST";request.timeoutInterval=300;request.setValue("Bearer "+capability,forHTTPHeaderField:"Authorization");request.setValue("application/json",forHTTPHeaderField:"Content-Type");request.httpBody=try? JSONSerialization.data(withJSONObject:body)
@@ -232,6 +234,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
  @objc private func saveGrade(){fileAction("save",level:grade.indexOfSelectedItem+1)}
  @objc private func lookupGrade(){fileAction("lookup")}
  @objc private func verifyFile(){fileAction("verify")}
+ @objc private func editRevision(){fileAction("edit-revision")}
  @objc private func fileAudit(){fileAction("audit")}
  @objc private func sendPrompt(){
   guard !chatBusy else{return};selectedRun=nil;anchorButton.isEnabled=false;let text=prompt.string

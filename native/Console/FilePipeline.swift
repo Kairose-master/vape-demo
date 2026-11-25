@@ -23,6 +23,8 @@ final class Pipeline {
  var role="user-b"
  fileprivate var runs=[String:([String:Any],RegisteredFile)]()
  private var anchored=Set<String>()
+ private var usedWriteApprovals=[String:RegisteredFile]()
+ private var writeApprovals=[String:(RegisteredFile,String,String)]()
  private var previews=[String:(RegisteredFile,String,String)]()
  init(synthetic:Bool,isolated:Bool=false)throws {
   let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].standardizedFileURL.resolvingSymlinksInPath()
@@ -39,9 +41,9 @@ final class Pipeline {
  func selected()throws->RegisteredFile {let d=try Data(contentsOf:root.appendingPathComponent("selected.json"));let record=try JSONDecoder().decode(RegisteredFile.self,from:d);return try registry.lookup(resourceID:record.resource_id,principal:principal)}
  func save(_ f:RegisteredFile)throws {try JSONEncoder().encode(f).write(to:root.appendingPathComponent("selected.json"),options:.atomic)}
  func describe(_ f:RegisteredFile)->[String:Any]{["resourceID":f.resource_id.uuidString,"level":f.level.rawValue,"revision":f.classification_revision,"policyVersion":f.policy_version]}
- func event(_ f:RegisteredFile,kind:String)throws->[String:Any] {
+ func event(_ f:RegisteredFile,kind:String,details:[String:Any]=[:])throws->[String:Any] {
   let value:[String:Any]=["kind":kind,"resourceID":f.resource_id.uuidString,"level":f.level.rawValue,"revision":f.classification_revision,"policyVersion":f.policy_version,"eventID":UUID().uuidString,"cloud":kind.hasPrefix("cloud_") ? "intent-only-result-separate":"not-sent","modelCalls":kind.hasPrefix("local_") ? "see-delivery-result":"0"]
-  let data=try JSONSerialization.data(withJSONObject:value,options:[.sortedKeys,.withoutEscapingSlashes]);let e:[String:Any]=["metadata":data.base64EncodedString(),"signature":try key.signature(for:data).base64EncodedString()]
+  let data=try JSONSerialization.data(withJSONObject:value.merging(details){a,_ in a},options:[.sortedKeys,.withoutEscapingSlashes]);let e:[String:Any]=["metadata":data.base64EncodedString(),"signature":try key.signature(for:data).base64EncodedString()]
   let name="event-"+UUID().uuidString+".json"
   var entries=try checkpoint()
   try write(e,name)
@@ -71,6 +73,9 @@ final class Pipeline {
    if entries[file.lastPathComponent] != SHA256.hash(data:raw).map({String(format:"%02x",$0)}).joined(){valid=false}
    if !file.lastPathComponent.hasPrefix("event-"){continue}
    guard let envelope=try JSONSerialization.jsonObject(with:Data(contentsOf:file)) as? [String:String],let metadata=envelope["metadata"],let signature=envelope["signature"],let data=Data(base64Encoded:metadata),let sig=Data(base64Encoded:signature),key.publicKey.isValidSignature(sig,for:data),let value=try JSONSerialization.jsonObject(with:data) as? [String:Any] else {valid=false;continue}
+   if value["kind"] as? String=="revision_write_saved" {
+    if let id=value["localRevisionID"] as? String,UUID(uuidString:id) != nil,let digest=value["revisionDigest"] as? String,let contents=try? Data(contentsOf:root.appendingPathComponent("LocalRevisions/"+id+".txt")),SelectedEvidence.hash(contents)==digest {} else{valid=false}
+   }
    if value["resourceID"] as? String==f.resource_id.uuidString{events.append(value)}
   }
   var executions=[[String:Any]]()
@@ -142,9 +147,57 @@ final class Pipeline {
   _ = try event(file,kind:"cloud_intent_explicit_approval")
   return ["status":"approved-once","body":body,"resource":describe(file)]
  }
+ // Local revision permission is enforced here, in the no-network file process.
+ func writeSource(_ f:RegisteredFile)throws->String {
+  guard role=="auditor-a",f.level == .three else{throw RegistryError.denied}
+  guard try registry.lookup(resourceID:f.resource_id,principal:principal)==f else{throw RegistryError.staleRevision}
+  return try registry.prepareTextRevisionBound(ModelTextRequest(resourceID:f.resource_id,policyVersion:f.policy_version,modelAlias:"local"),expectedRevision:f.classification_revision,principal:principal).text
+ }
+ func prepareWrite(_ f:RegisteredFile,replacement:String)throws->String {
+  do {
+   let original=try writeSource(f)
+   guard !replacement.isEmpty,replacement.utf8.count<=65536,replacement != original,replacement.unicodeScalars.allSatisfy({$0.value==9 || $0.value==10 || $0.value==13 || ($0.value>=32 && $0.value != 127)}) else{throw RegistryError.invalidRequest}
+   let token=UUID().uuidString;writeApprovals[token]=(f,original,replacement);return token
+  }catch{_ = try event(f,kind:"revision_write_blocked");throw error}
+ }
+ func finishWrite(_ token:String,approved:Bool)throws->[String:Any] {
+  guard let (f,original,replacement)=writeApprovals.removeValue(forKey:token) else{if let f=usedWriteApprovals[token]{_ = try event(f,kind:"revision_write_replay_blocked")};throw RegistryError.staleRevision}
+  usedWriteApprovals[token]=f
+  if !approved{_ = try event(f,kind:"revision_write_cancelled");return ["status":"cancelled","externalCalls":0]}
+  do {
+   guard try writeSource(f)==original else{throw RegistryError.needsRegistration}
+   let revision=UUID().uuidString
+   let directory=root.appendingPathComponent("LocalRevisions")
+   try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+   let destination=directory.appendingPathComponent(revision+".txt")
+   let details:[String:Any]=["localRevisionID":revision,"sourceDigest":SelectedEvidence.hash(Data(original.utf8)),"revisionDigest":SelectedEvidence.hash(Data(replacement.utf8)),"chain":"unanchored","originalPreserved":true]
+   _ = try event(f,kind:"revision_write_intent",details:details)
+   // Recheck after audit persistence, immediately before creating a new private file.
+   guard try writeSource(f)==original else{throw RegistryError.needsRegistration}
+   let fd=Darwin.open(destination.path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0o600)
+   guard fd>=0 else{throw RegistryError.unavailable}
+   do{try Data(replacement.utf8).withUnsafeBytes{bytes in var offset=0;while offset<bytes.count{let n=Darwin.write(fd,bytes.baseAddress!.advanced(by:offset),bytes.count-offset);guard n>0 else{throw RegistryError.unavailable};offset+=n}};guard fsync(fd)==0 else{throw RegistryError.unavailable};Darwin.close(fd)}catch{Darwin.close(fd);throw error}
+   _ = try event(f,kind:"revision_write_saved",details:details)
+   return ["status":"saved","localRevisionID":revision,"resource":describe(f),"originalPreserved":true,"chain":"unanchored","externalCalls":0,"scope":"private local derived TXT; original registration unchanged"]
+  }catch{_ = try event(f,kind:"revision_write_blocked_or_indeterminate");throw error}
+ }
+ func editRevision()throws->[String:Any] {
+  let f=try selected()
+  let original:String
+  do{original=try writeSource(f)}catch{_ = try event(f,kind:"revision_write_blocked");throw error}
+  let edit=NSAlert();edit.messageText="L3 새 로컬 리비전 작성";edit.informativeText="대상 등록 ID: \(f.resource_id) · r\(f.classification_revision) · 정책 v\(f.policy_version)\n원본은 변경하지 않습니다. 외부 전송 없음."
+  let scroll=NSScrollView(frame:NSRect(x:0,y:0,width:600,height:280));let editor=NSTextView(frame:scroll.bounds);editor.string=original;editor.isRichText=false;editor.isVerticallyResizable=true;editor.autoresizingMask = .width;editor.textContainer?.widthTracksTextView=true;scroll.documentView=editor;scroll.hasVerticalScroller=true;edit.accessoryView=scroll;edit.addButton(withTitle:"변경 비교");edit.addButton(withTitle:"취소");NSApp.activate(ignoringOtherApps:true)
+  guard edit.runModal() == .alertFirstButtonReturn else{_ = try event(f,kind:"revision_write_cancelled");return ["status":"cancelled"]}
+  let replacement=editor.string,token=try prepareWrite(f,replacement:editor.string)
+  let review=NSAlert();review.messageText="이 변경을 새 로컬 리비전으로 1회 저장 승인";review.informativeText="등록 ID: \(f.resource_id) · L3 · r\(f.classification_revision) · 정책 v\(f.policy_version)\n삭제(-)와 추가(+) 전체를 확인하세요. 원본 보존 · 외부 전송/체인 기록 없음."
+  let diff=NSTextView(frame:scroll.bounds);diff.isEditable=false;diff.string="--- 원본\n"+original.components(separatedBy:"\n").map{"- "+$0}.joined(separator:"\n")+"\n+++ 새 리비전\n"+replacement.components(separatedBy:"\n").map{"+ "+$0}.joined(separator:"\n");diff.isVerticallyResizable=true;diff.autoresizingMask = .width;diff.textContainer?.widthTracksTextView=true
+  let comparison=NSScrollView(frame:scroll.frame);comparison.hasVerticalScroller=true;comparison.documentView=diff;review.accessoryView=comparison;review.addButton(withTitle:"이 변경 1회 저장 승인");review.addButton(withTitle:"취소")
+  return try finishWrite(token,approved:review.runModal() == .alertFirstButtonReturn)
+ }
  func run(_ action:String,level:Int?,synthetic:Bool=false)throws->[String:Any] {
   guard role=="auditor-a" else{throw RegistryError.notOwner}
   switch action {
+  case "edit-revision": return try editRevision()
   case "select":
    let samples=root.appendingPathComponent("Samples");try FileManager.default.createDirectory(at:samples,withIntermediateDirectories:true)
    let sample=samples.appendingPathComponent("VAPE-Synthetic.txt")
@@ -179,7 +232,7 @@ final class Pipeline {
    _ = try registry.prepareTextRevisionBound(ModelTextRequest(resourceID:f.resource_id,policyVersion:f.policy_version,modelAlias:"local"),expectedRevision:f.classification_revision,principal:principal)
    _ = try event(f,kind:"policy_verified_no_send")
    let verifiedAudit=try audit(f)
-   return ["status":verifiedAudit["status"] as? String ?? "indeterminate","resource":describe(f),"read":"allowed-text-snapshot","cloudPolicy":f.level == .two ? "requires-separate-send-approval":"deny","write":"requires-separate-approval","modelCalls":0,"audit":verifiedAudit,"chain":"unanchored","anchorAvailable":false]
+   return ["status":verifiedAudit["status"] as? String ?? "indeterminate","resource":describe(f),"read":"allowed-text-snapshot","cloudPolicy":f.level == .two ? "requires-separate-send-approval":"deny","write":f.level == .three ? "new-local-revision-requires-approval":"deny","modelCalls":0,"audit":verifiedAudit,"chain":"unanchored","anchorAvailable":false]
   case "audit":
    guard !FileManager.default.fileExists(atPath:root.appendingPathComponent("pending.json").path) else{throw RegistryError.needsRegistration}
    let f=try selected();return ["status":"loaded","resource":describe(f),"audit":try audit(f)]
@@ -214,6 +267,26 @@ final class Pipeline {
     try original.write(to:eventFile);try FileManager.default.removeItem(at:eventFile);let missing=try p.audit(f);precondition(missing["status"] as? String=="indeterminate");try original.write(to:eventFile)
     let sample=p.root.appendingPathComponent("Samples/VAPE-Synthetic.txt");try Data("CHANGED SYNTHETIC".utf8).write(to:sample)
     do{_ = try p.run("verify",level:nil);fatalError("Changed file accepted")}catch{}
+    let w=try Pipeline(synthetic:true);w.role="auditor-a";_ = try w.run("select",level:nil,synthetic:true);_ = try w.run("save",level:2);let l2=try w.selected()
+    do{_ = try w.prepareWrite(l2,replacement:"SYNTHETIC revision");fatalError("L2 write accepted")}catch{}
+    _ = try w.run("save",level:3);let l3=try w.selected();let before=try w.writeSource(l3)
+    let cancelled=try w.prepareWrite(l3,replacement:"SYNTHETIC cancelled");_ = try w.finishWrite(cancelled,approved:false)
+    do{_ = try w.finishWrite(cancelled,approved:true);fatalError("Cancelled approval reused")}catch{}
+    let approval=try w.prepareWrite(l3,replacement:"SYNTHETIC saved revision")
+    let saved=try w.finishWrite(approval,approved:true);precondition(saved["status"] as? String=="saved")
+    let originalAfter=try w.writeSource(l3);precondition(originalAfter==before)
+    let revisionURL=w.root.appendingPathComponent("LocalRevisions/"+(saved["localRevisionID"] as! String)+".txt")
+    let revisionText=try String(contentsOf:revisionURL,encoding:.utf8);precondition(revisionText=="SYNTHETIC saved revision")
+    do{_ = try w.finishWrite(approval,approved:true);fatalError("Approval reused")}catch{}
+    let stale=try w.prepareWrite(l3,replacement:"SYNTHETIC stale");_ = try w.run("save",level:2)
+    do{_ = try w.finishWrite(stale,approved:true);fatalError("Stale policy accepted")}catch{}
+    _ = try w.run("save",level:3);let changed=try w.selected();let changedToken=try w.prepareWrite(changed,replacement:"SYNTHETIC changed source")
+    try Data("SYNTHETIC changed original".utf8).write(to:w.root.appendingPathComponent("Samples/VAPE-Synthetic.txt"))
+    do{_ = try w.finishWrite(changedToken,approved:true);fatalError("Changed source accepted")}catch{}
+    w.role="user-b";do{_ = try w.prepareWrite(changed,replacement:"SYNTHETIC unauthorized");fatalError("B write accepted")}catch{}
+    do{_ = try w.attached(["action":"preview","resourceID":changed.resource_id.uuidString,"revision":changed.classification_revision,"prompt":"SYNTHETIC"]);fatalError("L3 Cloud accepted")}catch{}
+    w.role="auditor-a";let writeAudit=try w.audit(changed);precondition(writeAudit["status"] as? String=="verified")
+    print("PASS local revisions: L2 denied; L3 saved; original preserved; cancel/replay/stale/source-change/B-write denied; L3 Cloud denied; signed audit verified; external calls 0")
     print("{\"status\":\"passed\",\"checks\":15,\"modelCalls\":0,\"picker\":\"synthetic-injected\",\"roles\":\"A grants B; B write denied; C denied; stale and revoked rejected\"}");return
    }
    let p=try Pipeline(synthetic:false,isolated:CommandLine.arguments.contains("--qa"))
