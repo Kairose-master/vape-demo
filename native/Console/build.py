@@ -17,7 +17,7 @@ def build(configuration):
     info=dict(CFBundleExecutable='Console',CFBundleIdentifier='org.vape.console.'+uuid.uuid4().hex,CFBundleName='VAPE Console',CFBundlePackageType='APPL',CFBundleVersion='1',LSMinimumSystemVersion='13.0',NSPrincipalClass='NSApplication',NSAppTransportSecurity={'NSAllowsLocalNetworking':True})
     (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     entitlement=run/'App.entitlements';entitlement.write_bytes(plistlib.dumps({'com.apple.security.app-sandbox':True,'com.apple.security.network.client':True}))
-    sources=['native/Console/FileBridge.swift','native/Classification/FileRegistry.swift','native/SelectedFlow/PrivateModelHandoff.swift','native/SelectedFlow/AppleLocalModel.swift','native/ReadyCloud/Core.swift','native/ReadyCloud/SecurePaste.swift','native/Console/App.swift']
+    sources=['native/Console/ChatWorkspace.swift','native/Console/FileBridge.swift','native/Classification/FileRegistry.swift','native/SelectedFlow/PrivateModelHandoff.swift','native/SelectedFlow/AppleLocalModel.swift','native/ReadyCloud/Core.swift','native/ReadyCloud/SecurePaste.swift','native/Console/App.swift']
     subprocess.run(flags+[str(ROOT/p) for p in sources]+['-o',str(binary)],check=True)
     subprocess.run(['codesign','--force','--sign','-','--timestamp=none','--options','runtime','--entitlements',str(entitlement),str(app)],check=True)
     subprocess.run(['codesign','--verify','--strict',str(app)],check=True)

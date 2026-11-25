@@ -12,6 +12,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
  private let prompt=PromptEditor(),reply=NSTextField(wrappingLabelWithString:"메시지를 입력하세요. 아직 모델을 호출하지 않았습니다."),route=NSPopUpButton()
  private let fileStatus=NSTextField(wrappingLabelWithString:"로컬 TXT를 가져온 뒤 등급을 저장하고 다시 조회하세요. 등록은 전송 승인이 아닙니다."),grade=NSPopUpButton()
  private var chatBusy=false
+ private var chat:ChatWorkspace!
  private var selectedRun:String?;private var signerPinned=false
  private let anchorButton=NSButton(title:"같은 실행 Besu 앵커 · 독립 검증 (1회)",target:nil,action:nil)
  private var localStatus=NSTextField(wrappingLabelWithString:"아직 확인하지 않았습니다. 모델·체인·Cloud 실행 0회. 준비 상태부터 확인하세요.")
@@ -34,7 +35,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   } catch{NSApp.terminate(nil);return}
   do {let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0];try FileManager.default.createDirectory(at:support,withIntermediateDirectories:true);let audit=try CloudAudit(support.appendingPathComponent("CloudAudit-"+UUID().uuidString));engine=CloudEngine(transport:uiTest ? synthetic : HTTPSCloud(),audit:{try audit.append($0)})}
   catch {NSApp.terminate(nil);return}
-  window=NSWindow(contentRect:NSRect(x:0,y:0,width:1000,height:960),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false);window.title=CommandLine.arguments.contains("--gui-qa") ? "VAPE · 합성 GUI 검증":"VAPE · 통합 보안 실행 콘솔";window.minSize=NSSize(width:900,height:920);window.delegate=self;window.center()
+  window=NSWindow(contentRect:NSRect(x:0,y:0,width:1000,height:960),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false);window.title=CommandLine.arguments.contains("--gui-qa") ? "VAPE · 합성 GUI 검증":"VAPE · 통합 보안 실행 콘솔";window.minSize=NSSize(width:900,height:920);window.delegate=self;window.isRestorable=false;window.center()
   window.contentView=ConsoleBackground(frame:window.contentView!.bounds)
   var area=window.contentView!.bounds.insetBy(dx:20,dy:20);area.size.height-=44
   let tabs=NSTabView(frame:area);tabs.tabViewType = .noTabsNoBorder;tabs.autoresizingMask=[.width,.height];window.contentView!.addSubview(tabs);pages=tabs
@@ -44,15 +45,16 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   func page(_ title:String)->NSView {let item=NSTabViewItem(identifier:title);item.label=title;let view=NSView();item.view=view;tabs.addTabViewItem(item);return view}
   let localPage=page("Apple Local + Besu"),cloudPage=page("OpenAI · 별도 L2 워크플로"),mockPage=page("오프라인 모의 · 명시 선택")
   let filePage=page("감사자"),userPage=page("사용자")
-  let user=makeStack(userPage);heading("VAPE",user)
-  label("무엇을 도와드릴까요? 모델은 ‘모델 설정’에서 선택합니다. 각 메시지는 별도 실행입니다. 감사자가 미리 등록·등급 저장한 파일만 아래 목록에서 첨부할 수 있습니다.",user)
-  let editor=NSScrollView();editor.hasVerticalScroller=true;editor.borderType = .bezelBorder;editor.documentView=prompt;prompt.font = .systemFont(ofSize:17);prompt.isRichText=false;prompt.isVerticallyResizable=true;prompt.autoresizingMask = .width;prompt.textContainer?.widthTracksTextView=true
-  user.addArrangedSubview(editor);editor.widthAnchor.constraint(equalTo:user.widthAnchor).isActive=true;editor.heightAnchor.constraint(equalToConstant:130).isActive=true
-  attachments.addItem(withTitle:"첨부 없음");attachments.target=self;attachments.action=#selector(attachmentChanged);user.addArrangedSubview(attachments)
-  user.addArrangedSubview(NSButton(title:"등록 파일 목록 새로고침",target:self,action:#selector(loadAttachments)))
-  user.addArrangedSubview(NSButton(title:"메시지 보내기",target:self,action:#selector(sendPrompt)))
+  chat=ChatWorkspace(frame:userPage.bounds);chat.autoresizingMask=[.width,.height];userPage.addSubview(chat)
+  chat.canNavigate={ [weak self] in !(self?.chatBusy ?? true) };chat.didNavigate={ [weak self] in self?.prompt.string="";self?.attachments.selectItem(at:0);self?.attachmentChanged() }
+  let user=chat.composer
+  let editor=NSScrollView();editor.hasVerticalScroller=true;editor.borderType = .bezelBorder;editor.documentView=prompt;prompt.frame=NSRect(x:0,y:0,width:600,height:90);prompt.font = .systemFont(ofSize:16);prompt.isRichText=false;prompt.isVerticallyResizable=true;prompt.autoresizingMask = .width;prompt.textContainer?.widthTracksTextView=true;prompt.setAccessibilityLabel("메시지 입력")
+  user.addArrangedSubview(editor);editor.widthAnchor.constraint(equalTo:user.widthAnchor).isActive=true;editor.heightAnchor.constraint(equalToConstant:90).isActive=true
+  attachments.addItem(withTitle:"첨부 없음");attachments.target=self;attachments.action=#selector(attachmentChanged);attachments.setAccessibilityLabel("등록 파일 첨부");user.addArrangedSubview(attachments);attachments.widthAnchor.constraint(lessThanOrEqualTo:user.widthAnchor).isActive=true
+  let controls=NSStackView();controls.orientation = .horizontal;controls.spacing=12
+  controls.addArrangedSubview(NSButton(title:"등록 목록 새로고침",target:self,action:#selector(loadAttachments)))
+  let submit=NSButton(title:"보내기",target:self,action:#selector(sendPrompt));submit.bezelStyle = .rounded;submit.keyEquivalent="\r";submit.keyEquivalentModifierMask = .command;controls.addArrangedSubview(submit);user.addArrangedSubview(controls)
   anchorButton.target=self;anchorButton.action=#selector(anchorSelected);anchorButton.isEnabled=false;user.addArrangedSubview(anchorButton)
-  evidence(reply,user)
   let file=makeStack(filePage);heading("감사자 · 같은 파일의 보안 확인",file)
   label("① 로컬 TXT 가져오기 → ② 등급 저장 → ③ 저장된 등급 재조회 → ④ 정책·서명 감사 검증\n외부 업로드/모델 전송 없음. 파일이나 등급이 바뀌면 이전 검증은 현재 상태에 적용하지 않습니다.",file)
   file.addArrangedSubview(NSButton(title:"1. 로컬 TXT 가져오기",target:self,action:#selector(selectFile)))
@@ -116,6 +118,23 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
    }
    for button in localButtons {precondition(button.frame.width>100 && button.frame.height>10)}
    precondition(prompt.string.isEmpty && route.indexOfSelectedItem==0)
+   chat.begin("SYNTHETIC first question",route:"Apple 로컬",attachment:"");chat.update("SYNTHETIC first answer")
+   chat.newChat();chat.begin("SYNTHETIC second question",route:"OpenAI 클라우드",attachment:"L1 · synthetic");chat.update("클라우드 전송 차단: denied")
+   precondition(chat.conversations.count==2 && chat.conversations.allSatisfy{$0.messages.count==2})
+   chat.open(0);precondition(chat.conversations[chat.selected].messages[1].text=="SYNTHETIC first answer")
+   chat.open(1);precondition(chat.conversations[chat.selected].messages[1].text.contains("차단"))
+   tabs.selectTabViewItem(at:4);window.contentView!.layoutSubtreeIfNeeded();window.display()
+   let preview=window.contentView!,previewBitmap=preview.bitmapImageRepForCachingDisplay(in:preview.bounds)!;preview.cacheDisplay(in:preview.bounds,to:previewBitmap)
+   let previewURL=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("VAPE-chat-history.png");try! previewBitmap.representation(using:.png,properties:[:])!.write(to:previewURL);print("CHAT PREVIEW "+previewURL.path)
+   chat.open(0);selectedRun="SYNTHETIC-RUN-A";anchorButton.isEnabled=true;chat.beginEvidence();chatBusy=true
+   chat.newChat();chat.open(1);precondition(chat.selected==0 && chat.conversations.count==2)
+   chat.update("SYNTHETIC receipt A · not a real chain result");chatBusy=false
+   precondition(chat.conversations[0].messages[1].text=="SYNTHETIC first answer")
+   precondition(chat.conversations[0].messages.last!.text.contains("receipt A"))
+   chat.notice("SYNTHETIC empty input notice");precondition(chat.conversations[0].messages[1].text=="SYNTHETIC first answer")
+   chat.open(1);precondition(selectedRun==nil && !anchorButton.isEnabled)
+   precondition(chat.conversations[1].messages.count==2 && !chat.conversations[1].messages.contains{$0.text.contains("receipt A")})
+   print("PASS session chat: two conversations, question/answer order, blocked response, reopen, busy navigation blocked, receipt stays in A, stale anchor cleared, no persistence or replay")
    window.orderOut(nil)
    tabs.selectTabViewItem(at:0)
    input.stringValue="SYNTHETIC-UI-TEST-NOT-A-REAL-KEY";prepare()
@@ -142,7 +161,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   let scroll=NSScrollView();scroll.hasVerticalScroller=true;scroll.borderType = .bezelBorder;stack.addArrangedSubview(scroll);scroll.translatesAutoresizingMaskIntoConstraints=false;scroll.widthAnchor.constraint(equalTo:stack.widthAnchor).isActive=true;scroll.heightAnchor.constraint(equalToConstant:300).isActive=true
   field.font = .monospacedSystemFont(ofSize:13,weight:.regular);field.isSelectable=true;field.frame=NSRect(x:0,y:0,width:850,height:300);scroll.documentView=field
  }
- private func show(_ value:String,_ field:NSTextField){field.stringValue=value;let width=max(700,field.enclosingScrollView?.contentSize.width ?? 850);field.frame.size=NSSize(width:width,height:max(300,field.cell!.cellSize(forBounds:NSRect(x:0,y:0,width:width,height:10000)).height+20))}
+ private func show(_ value:String,_ field:NSTextField){if field===reply{chat.update(value);return};field.stringValue=value;let width=max(700,field.enclosingScrollView?.contentSize.width ?? 850);field.frame.size=NSSize(width:width,height:max(300,field.cell!.cellSize(forBounds:NSRect(x:0,y:0,width:width,height:10000)).height+20))}
  private func action(_ name:String){
   localButtons.forEach{$0.isEnabled=false}
   var request=URLRequest(url:endpoint.appendingPathComponent("action"));request.httpMethod="POST";request.setValue("Bearer "+capability,forHTTPHeaderField:"Authorization");request.setValue("application/json",forHTTPHeaderField:"Content-Type");request.httpBody=try? JSONSerialization.data(withJSONObject:["action":name])
@@ -179,12 +198,12 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   self.metadataPost("file-identity",["publicKey":key]){result in self.signerPinned=result["status"] as? String=="pinned";self.anchorButton.isEnabled=self.signerPinned && self.selectedRun != nil}
  }}
  @objc private func anchorSelected(){
-  guard !chatBusy,signerPinned,let run=selectedRun else{return};anchorButton.isEnabled=false;chatBusy=true
+  guard !chatBusy,signerPinned,let run=selectedRun else{return};chat.beginEvidence();anchorButton.isEnabled=false;chatBusy=true
   fileBridge.call(["action":"anchor","runID":run]){[weak self] value in guard let self=self else{return}
    guard let package=value["package"] as? [String:Any],package["runID"] as? String==run else{self.chatBusy=false;self.show("파일·등급 변경 또는 실행 검증 실패 · 앵커 차단",self.reply);return}
    self.show("같은 선택 파일 실행의 서명 검증 → 실제 로컬 Besu → 별도 read-back 확인 중… 자동 재시도 없음",self.reply)
    self.metadataPost("file-anchor",package){result in self.chatBusy=false
-    if result["status"] as? String=="verified" {self.fileBridge.call(["action":"receipt","receipt":result]){stored in if stored["status"] as? String != "saved" {self.show("체인 확인 완료 · 앱 감사 이력 보존은 판정 불가",self.reply)}}}
+    if result["status"] as? String=="verified" {self.fileBridge.call(["action":"receipt","receipt":result]){stored in if stored["status"] as? String != "saved" {self.show("체인 확인 완료 · 앱 감사 이력 보존은 판정 불가",self.fileStatus)}}}
     let data=try? JSONSerialization.data(withJSONObject:result,options:[.sortedKeys,.prettyPrinted]);self.show(data.flatMap{String(data:$0,encoding:.utf8)} ?? "판정 불가",self.reply)
    }
   }
@@ -206,7 +225,8 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
  @objc private func fileAudit(){fileAction("audit")}
  @objc private func sendPrompt(){
   guard !chatBusy else{return};selectedRun=nil;anchorButton.isEnabled=false;let text=prompt.string
-  guard !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,text.utf8.count<=65536 else{show("메시지는 1~65536 UTF-8 바이트여야 합니다.",reply);return}
+  guard !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,text.utf8.count<=65536 else{chat.notice("메시지는 1~65536 UTF-8 바이트여야 합니다.");return}
+  chat.begin(text,route:route.indexOfSelectedItem==0 ? "Apple 로컬":"OpenAI 클라우드",attachment:attachments.indexOfSelectedItem>0 ? attachments.titleOfSelectedItem ?? "":"");prompt.string=""
   if attachments.indexOfSelectedItem>0 {
    let file=attachedFiles[attachments.indexOfSelectedItem-1]
    var request:[String:Any]=["action":route.indexOfSelectedItem==0 ? "local":"preview","resourceID":file["resourceID"]!,"revision":file["revision"]!,"prompt":text]
@@ -232,7 +252,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
    }
   } else {
    guard !started,let credential=key else{show("모델 설정에서 키를 직접 준비하세요. 이 세션에서 이미 1회 전송했다면 자동 재송신하지 않습니다.",reply);return}
-   guard confirmCloud(text) else{return}
+   guard confirmCloud(text) else{show("승인 취소 · 외부 송출 0회",reply);return}
    sendCloud(text,key:credential)
   }
  }
