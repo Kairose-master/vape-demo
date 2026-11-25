@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "organization": "synthetic-demo-org",
+  "levels": ["L1", "L2", "L3"],
+  "defaultEffect": "deny",
+  "rules": [
+    {"level":"L1","role":"operator","workflow":"local-only","operation":"read","destination":"file","effect":"allow"},
+    {"level":"L1","role":"operator","workflow":"local-only","operation":"model_send","destination":"local-model","effect":"allow"},
+    {"level":"L2","role":"operator","workflow":"approved-cloud-read","operation":"read","destination":"file","effect":"allow"},
+    {"level":"L2","role":"operator","workflow":"approved-cloud-read","operation":"model_send","destination":"approved-cloud","effect":"allow"},
+    {"level":"L3","role":"operator","workflow":"approved-workflow","operation":"read","destination":"file","effect":"allow"},
+    {"level":"L3","role":"operator","workflow":"approved-workflow","operation":"write","destination":"file","effect":"allow"},
+    {"level":"L3","role":"operator","workflow":"approved-workflow","operation":"model_send","destination":"approved-cloud","effect":"allow"}
+  ]
+}

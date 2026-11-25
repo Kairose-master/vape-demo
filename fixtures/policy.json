@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "organization": "demo-org",
+  "classifications": [
+    "public",
+    "confidential"
+  ],
+  "roles": [
+    "analyst"
+  ],
+  "default": "deny",
+  "rules": [
+    {
+      "id": "read-contract",
+      "role": "analyst",
+      "classification": "confidential",
+      "operation": "read",
+      "destination": null,
+      "effect": "allow"
+    },
+    {
+      "id": "summarize-local",
+      "role": "analyst",
+      "classification": "confidential",
+      "operation": "model_send",
+      "destination": "local-model",
+      "effect": "allow"
+    },
+    {
+      "id": "summarize-cloud",
+      "role": "analyst",
+      "classification": "confidential",
+      "operation": "model_send",
+      "destination": "cloud-model",
+      "effect": "allow"
+    },
+    {
+      "id": "test-tool-rule",
+      "role": "analyst",
+      "classification": "confidential",
+      "operation": "tool_send",
+      "destination": "test-tool",
+      "effect": "deny"
+    }
+  ]
+}

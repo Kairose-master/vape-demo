@@ -1,1 +1,173 @@
-# vape-demo
+# VAPE — 통합 네이티브 데모 소스
+
+**먼저 실행할 것은 키 없는 모의 데모입니다.** 실제 AI·Cloud·블록체인 성공을 뜻하지 않습니다. 설치 스크립트·바이너리·개인 자료·API 키·기존 감사/체인 상태는 포함하지 않습니다.
+
+
+## 다른 Mac에서 시작하기
+
+이 저장소는 검토된 `b12b6120926eb828f2daab5a90a37b3486810b53` 릴리스의 선별 소스만 새 히스토리로 내보낸 것입니다. 원본 개발 히스토리·바이너리·로컬 증거·사용자 자료·키는 포함하지 않습니다. 비공개 저장소에 접근할 수 있는 본인 GitHub 계정으로 clone하거나 **Code → Download ZIP**을 사용하고, 압축을 푼 폴더에서 다음 명령을 실행합니다.
+
+```sh
+python3 --version
+python3 demo.py --self-test
+python3 demo.py
+```
+
+Python **3.9 이상**이 필요하고 pip 패키지는 필요 없습니다. 기본 실행은 키 없는 모의 데모입니다. 실제 Apple + Besu 통합은 아래 `preflight` → `unified` 순서로 명시적으로 선택합니다. 새 기기에서 실제 모델·원장 결과를 확인하기 전에는 성공으로 간주하지 않습니다.
+
+### 실제 통합 실행 전 준비
+
+1. Apple Silicon Mac, macOS 26 이상, FoundationModels를 포함한 SDK/Apple Command Line Tools, 기기에서 사용 가능한 Apple 시스템 모델을 준비합니다. 필요한 설치·Apple Intelligence 설정은 사용자가 직접 Apple의 공식 경로에서 수행합니다. 런처는 이를 설치하거나 활성화하지 않습니다.
+2. Node.js와 아래 고정 버전의 Besu·Temurin JDK·soljson을 공식 배포처에서 별도로 준비합니다. 정확한 archive 이름·SHA256·추출 구조는 아래 도구 기준과 소스에 고정되어 있습니다. 다른 버전으로 이름만 바꿔 넣지 마세요. 이 저장소에는 도구·모델이 없습니다.
+3. 도구 폴더는 저장소 밖에 두고 `python3 demo.py --mode preflight --tools-dir /path/to/verified-tools`로 확인합니다. 미지원·누락·hash 불일치는 중단되며 자동 다운로드하지 않습니다.
+4. 둘 다 ready일 때 `python3 demo.py --mode unified --tools-dir /path/to/verified-tools`로 새 창을 엽니다. 출력된 새 합성 TXT를 선택하고 L1 등록 후 **L1 검증 → Besu 기록 (1회)**를 누릅니다.
+
+기본 모의 데모는 Node/Java/Apple 모델이 없어도 사용할 수 있습니다. Native 앱은 로컬 ad-hoc 빌드이며 공증된 배포 앱이 아닙니다. 보안 설정을 끄거나 조직 제한을 우회하지 마세요. 준비가 안 된 Mac은 기본 모의 모드만 명시적으로 사용합니다.
+
+## 새 통합 경로: L1 → Apple 실모델 → 로컬 Besu
+
+이 판은 `unified-apple-ledger`의 **299dbfd3**를 포함합니다. 이전 소스 ZIP의 기본 키 없는 모의 경로는 유지하지만, 그 모의 결과를 통합 경로의 성공으로 대체하지 않습니다.
+
+1. 이미 검증하여 준비한 로컬 도구 디렉터리로 **실행 전 점검**을 합니다. 이 명령은 모델 추론·노드 시작·Cloud 호출 없이 CPU/OS/모델 준비 상태 및 도구 archive SHA256을 확인합니다.
+
+```sh
+python3 demo.py --mode preflight --tools-dir /path/to/verified-tools
+```
+
+`apple.status`는 `ready`, `disabled`, `not_ready`, `device_unsupported`, `os_unsupported`, `framework_unsupported` 등을 구분합니다. 개발 도구/프로브 실패도 명시적으로 남습니다. `ledger.status`는 도구 미지정·누락·hash 불일치·플랫폼 미지원과 준비 완료를 구분합니다. `architecture`는 현재 Python 프로세스의 감지값입니다. Rosetta의 x86_64 프로세스는 통합 실행을 중단하며 native arm64 환경을 별도로 준비해야 합니다. 둘 다 준비되어야 exit 0이며, 나머지는 중단합니다. 도구·모델 설치나 설정 변경은 하지 않습니다.
+
+2. **창 없는 합성 실검증**은 준비 상태를 다시 확인하고 새 임시 소스/자료에서 실제 Apple 1회 및 새 사설 Besu 노드를 사용합니다. OpenAI 키·요청은 없습니다.
+
+```sh
+python3 demo.py --mode unified-check --tools-dir /path/to/verified-tools
+```
+
+L1 Cloud 거부 → 실제 로컬 응답 → Ed25519/Merkle 검증 → 채굴 receipt → 별도 RPC 재조회를 연결합니다. 변조·누락·정책 변경·다른 run ID는 거부되어야 합니다. 파일 선택/scope만 시험 대역이므로 GUI의 picker·App Sandbox 승인 검증으로 부르지 않습니다. 실패·사용 불가를 모의 응답으로 바꾸지 않습니다. 이번 실행 자료는 독립 임시 폴더에 보존하며 기존 자료를 지우지 않습니다.
+
+3. **사용자 발표 UI**는 별도로 시작합니다. 키가 열려 있는 기존 앱은 그대로 두고, 새 창에서 사용자가 직접 합성 파일을 선택하고 `L1 검증 → Besu 기록 (1회)`를 승인합니다.
+
+```sh
+python3 demo.py --mode unified --tools-dir /path/to/verified-tools
+```
+
+GUI는 별도 사용자 리허설 단계입니다. 완료 전 터미널을 중단하면 판정 불가가 될 수 있습니다. 실패/시간 초과 뒤 자동 재시도하지 않습니다. 완료된 노드는 종료되며, 화면의 성공은 해당 시각의 확인이지 현재 온라인 체인 검증이 아닙니다. 서명 공개키/run ID는 새 로컬 도우미가 고정하는 동일 사용자 신뢰 모델이며 원격 인증이 아닙니다. policyRoot는 정규화된 정책 snapshot의 단일 잎 root이고, executionRoot는 서명 plan과 사건의 Merkle root입니다. 체인에는 본문·파일 경로·모델 응답이 아니라 루트와 결합 메타데이터만 기록합니다.
+
+### 통합 도구 기준 (소스 설정에서 확인)
+
+- Besu **26.11.1**: `besu-26.11.1.tar.gz`
+- Temurin JDK **25.0.5.1+2**, macOS **aarch64**: `OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5.1_2.tar.gz`
+- Solidity compiler **0.8.28**: `soljson-0.8.28.js`
+- Bouncy Castle **1.86**는 해당 Besu 배포의 jar를 사용합니다. Node.js는 이미 설치되어 있어야 하며 기존 driver가 별도 버전을 고정하지 않습니다.
+- 기대 chain ID: **2026112403**. 새 단일 validator QBFT, loopback 동적 포트 전용입니다. 운영 원장/다중 조직 합의/원격 신원 증명과 다릅니다.
+
+정확한 archive SHA256은 `vape/ledger/local_exercise.py`의 `pins`에서 읽어 preflight가 출력합니다. 필요한 추출 디렉터리는 `jdk-25.0.5.1+2/Contents/Home`과 `besu-26.11.1`입니다. archive hash와 실행 파일 존재를 검사하며, 추출된 전체 도구 트리의 모든 바이트를 다시 검증하는 것은 아닙니다. 검토된 원본 도구를 사용하세요. 도구와 생성된 chain config/상태/키는 이 ZIP에 없습니다.
+
+통합 실경로는 macOS arm64 및 Foundation Models 준비가 필요합니다. Intel/미지원 OS/비활성 모델은 기본 모의 데모를 **명시적으로** 선택할 수 있으나 통합 성공으로 표시되지 않습니다. MacBook Air 또는 다른 물리 Mac에서 검증했다고 주장하지 않습니다.
+
+## 1. 가장 간단한 시작
+
+ZIP을 새 폴더에 풀고 터미널에서 해당 폴더로 이동합니다. 이미 설치된 Python 3.9 이상이 필요합니다. 의존성 설치는 없습니다.
+
+```sh
+python3 demo.py
+```
+
+표시된 `http://127.0.0.1:임시포트`를 브라우저에서 엽니다. 외부 서버에 연결하지 않으며, 기존 8765를 사용하지 않습니다. macOS에서 브라우저/창을 자동으로 열거나 키 입력창을 건드리지 않습니다. 종료는 **Ctrl-C**입니다. 이 실행의 합성 자료·모의 감사키는 새 임시 폴더에 생성되고 정상 종료 시 정리됩니다.
+
+화면의 `local-model`, `cloud-model`은 모두 **localhost 모의 수신기**입니다. 합성 문서 읽기, 승인된 모의 모델 수신, 도구 반출 차단, 정책 변경 후 재실행, 과거 증거 유지와 변조 검증을 확인합니다. 이 웹 정책 예제와 아래 네이티브 L1/L2/L3 예제는 별개이며 동일 정책/동일 사건으로 합치지 않습니다. 모의 Cloud 허용을 실제 Cloud 허용·성공으로 발표하면 안 됩니다.
+
+## 2. 한 명령 자체 검증
+
+```sh
+python3 demo.py --self-test
+```
+
+정책·감사·UI 계약 테스트와 새 프로세스의 실제 HTTP 진입점 검증을 실행하고 종료합니다. 모든 입력은 합성이고 수신기는 loopback입니다. 기존 서버/런타임을 탐색하지 않습니다. 실패는 실패로 반환하며 가짜 성공으로 대체하지 않습니다.
+
+## 3. macOS 발표 UI와 Apple 실모델 — 선택 기능
+
+Python 3.9+ 외에 **이미 설치된 Apple Command Line Tools**가 필요합니다. 자동 설치·설정 변경·모델 다운로드는 없습니다.
+
+| 경로 | 최소 조건 | 실제 모델 여부 |
+|---|---|---|
+| 기본 `python3 demo.py` | Python 3.9+, 현대 브라우저 | 모의, 키 없음 |
+| `--mode native` | macOS 13+ 빌드 기준, CLT | 네이티브 정책 경로 UI, 모델 비활성 |
+| `--mode apple` | Apple Silicon, macOS 26+ 및 FoundationModels 지원 SDK, 시스템 모델 사용 가능 | 사용자 선택·실행 후 실제 Apple on-device 모델 |
+| Intel Mac | macOS 13+ 네이티브 빌드 검사 대상 | Apple 실모델 지원 대상으로 안내하지 않음; 기본 모의 모드 사용 |
+| Linux / Windows | 기본 Python 경로만 후보 | AppKit UI/Apple 모델 불가, 실제 기기 검증 없음 |
+
+```sh
+python3 demo.py --mode native
+python3 demo.py --mode apple
+```
+
+**두 명령 중 필요한 하나만 실행하세요.** 새 임시 소스 복사본에 앱과 합성 파일을 만들고 새 앱을 시작합니다. `--mode apple`은 실제 로컬 모델 사용에 대한 명시적 선택입니다. 출력된 이번 실행의 합성 파일만 사용자 본인이 파일 선택 창에서 선택합니다. L1 Cloud 차단과 실제 로컬 결과를 구분합니다. Apple 모델이 준비되지 않으면 실패/사용 불가로 남으며 Cloud나 모의 응답으로 자동 전환하지 않습니다. 기본 모의 데모를 별도로 선택할 수 있습니다.
+
+임시 앱 복사본은 열려 있는 앱 보호를 위해 자동 삭제하지 않습니다. 사용 후 앱과 해당 런처를 종료하고 **이번에 출력된 임시 폴더만** 필요에 따라 정리하세요. 앱 컨테이너에도 이 실행의 비공개 등록·서명 감사 기록이 생성됩니다. 소스 ZIP에는 포함하지 않습니다.
+
+모델의 실제 사용 가능 여부는 `SystemLanguageModel.default.isAvailable`로 확인합니다. Apple Intelligence 설정·지역/언어·모델 준비 상태는 기기마다 다를 수 있습니다. 이 패키지는 이를 켜거나 변경하지 않습니다. macOS 13은 빌드 타깃이고 macOS 13에서 Apple 실모델을 실행할 수 있다는 뜻이 아닙니다.
+
+빌드·CPU 아키텍처·미지원 모델 차단 검사만 하려면:
+
+```sh
+python3 demo.py --mode native-check
+```
+
+앱을 열거나 모델을 호출하지 않습니다. arm64/x86_64 및 universal2를 검사합니다. Intel 바이너리의 실제 Intel 기기 실행이나 다른 OS 버전 실행을 증명하지 않습니다.
+
+## 4. 실제 Cloud 1회 검증 — 선택, 건너뛰어도 됨
+
+**L2 실제 OpenAI 전송 구현이 포함되어 있습니다.** 다만 L1 Apple+Besu 창과 분리된 보안 입력 앱이며, 임의 선택 파일을 Cloud로 전송하는 기능은 아닙니다.
+
+| 구분 | L1 Apple + Besu | L2 실제 Cloud |
+|---|---|---|
+| 진입점 | `demo.py --mode unified --tools-dir …` | `demo.py --mode cloud-build` 후 출력된 앱을 사용자가 직접 열기 |
+| 합성 자료 | 새 실제 TXT를 macOS picker로 선택·L1 등록 | 앱에 내장된 고정 합성 L2 문구만 사용; 파일 읽기 없음 |
+| 처리 경로 | 기기의 실제 Apple 모델 | 고정 TLS `api.openai.com/v1/responses`, 소스에 고정된 데모 모델 `gpt-6.1-terra` |
+| 사전 조건 | Apple 모델 ready + 검증된 Besu 도구 | macOS 13+ 빌드 기준/CLT, 네트워크 허용, 사용자의 유효 API 키·해당 모델 접근·결제/사용량 조건 |
+| 승인 | 통합 1회 실행 버튼 | 키 준비와 실제 송출 승인 두 단계, 모두 사용자 직접 수행 |
+| 증거 | Ed25519/Merkle + 실제 로컬 Besu receipt/재조회 | Ed25519 로컬 감사만; 이 Cloud 사건의 Besu 앵커는 미포함 |
+
+Cloud 앱은 Apple Intelligence나 Besu를 요구하지 않습니다. 다른 Mac에서의 실제 실행과 계정의 모델 접근은 별도 확인이 필요합니다. 이 고정 모델은 조직 승인 모델이라는 주장이 아니라 사용자가 화면에서 이번 1회 사용을 승인하는 데모 기본값입니다.
+
+포함 소스: `native/ReadyCloud/Core.swift`의 `CloudEngine.executeL2`/`HTTPSCloud.send`, `App.swift`의 보안 입력·전송 버튼, `build.py`의 합성 테스트/빌드입니다. `demo.py`의 `cloud-build` 분기는 이 빌드 진입점을 새 임시 소스에서 호출합니다.
+
+사용자 실행 순서:
+
+1. 아래 `cloud-build`를 실행합니다. 빌드만 하며 창·외부 요청은 열지 않습니다.
+2. 출력된 `VAPE OpenAI Ready v2.app`만 Finder 등 정상 macOS 실행 경로로 직접 엽니다. 기존에 이미 전송한 창을 다시 실행하지 않습니다.
+3. 화면의 수신처·고정 모델·정확한 합성 문구를 확인합니다. API 사용료가 발생할 수 있습니다.
+4. 사용자 본인이 `NSSecureTextField`에 자신의 키를 입력하고 **1. 키 준비 — 아직 전송하지 않음**을 누릅니다. 이 단계의 API 호출은 0회입니다.
+5. 실제 송출을 원할 때만 **2. 위 모델·합성 내용의 OpenAI 1회 전송 승인**을 직접 누릅니다. 같은 실행에서 L1 차단을 기록한 뒤 고정 L2 요청 1회만 보냅니다. 실패/불확실하면 자동 재전송하지 않습니다.
+6. 결과는 새 앱 화면에서 직접 확인합니다. 키는 앱 메모리에만 두고 완료/취소 시 앱의 참조를 해제하며 파일·환경변수·감사·Keychain에 저장하지 않습니다. 키나 화면을 에이전트에게 보내지 않습니다.
+
+`store:false`, 도구 실행 없음, 리디렉션 거절, 앱 수준 재시도/모델 대체 없음이 적용됩니다. `store:false`를 사업자의 모든 보존이 없다는 보증으로 해석하지 않습니다. 계정/모델/네트워크 문제가 있으면 실패 또는 판정 불가로 표시하며 설정을 우회하지 않습니다.
+
+
+기본 데모/Apple 경로와 분리된 소스 `native/ReadyCloud`를 포함합니다(기준 `3594e5e1`). 빌드·합성 테스트만:
+
+```sh
+python3 demo.py --mode cloud-build
+```
+
+실제 외부 호출은 하지 않고 새 앱 경로만 출력합니다. 사용자가 나중에 그 앱을 직접 열고, 화면의 대상 모델·합성 내용을 확인한 뒤 **자신이 직접 보안 입력창에 키를 입력**하거나 취소합니다. 키 준비와 실제 1회 전송 승인은 다른 단계입니다. 키를 채팅·터미널 명령·환경변수·파일·스크린샷에 넣지 마세요. 에이전트는 입력창/클립보드/AX/화면/메모리를 검사하지 않습니다. 이미 다른 창에서 보냈다면 새 창에서 반복하지 마세요.
+
+계정 권한·모델 접근·요금·실제 수신은 **미확인**입니다. 이 패키지 제작 중 실호출은 없었습니다. 결과가 판정 불가면 자동 재시도하지 않습니다. 로컬 서명 기록은 원격 사업자 영수증이나 체인 앵커가 아닙니다. 세부 동작은 `native/ReadyCloud/README.md`를 확인하세요. 사용할 수 없으면 이 단계를 건너뜁니다.
+
+## 5. 로컬 Besu — 별도 도구가 있을 때만
+
+기본 모의 감사의 `file-mock-anchor`, Apple의 로컬 Ed25519 기록, 허가형 체인은 서로 다릅니다. Besu 도구/Java/Node/Solidity compiler/키/체인 상태를 ZIP에 넣지 않습니다. 설치·다운로드를 자동 실행하지 않습니다.
+
+이미 준비되고 검증된 도구 디렉터리가 있을 때만:
+
+```sh
+python3 demo.py --mode besu --tools-dir /path/to/verified-tools
+```
+
+`vape/ledger/local_exercise.py`가 요구하는 정확한 archive 이름·SHA256, 추출된 Besu/JDK, compiler가 모두 필요합니다. 현재 도구 레이아웃은 **macOS arm64 JDK에 고정**되어 Intel/Linux/Windows Besu 이식성을 주장하지 않습니다. 도구가 없으면 이 검증을 건너뛰세요. 새 임시 복사본에서 단일 validator 사설 시험 노드/일회 서명자를 만들고 자신의 노드만 종료합니다. 기존 노드/공개 체인에 연결하지 않습니다. 단일 validator 결과는 운영 합의/외부 신원 보증이 아닙니다. 기본 모의 자체 검증은 Besu를 실행하지 않습니다. 이 릴리스의 별도 실제 통합 실행 기록과 한계는 `portable/VALIDATION.md`를 참조하세요.
+
+## 보안·배포 한계
+
+macOS 앱은 로컬 ad-hoc 서명 빌드이며 Developer ID 서명·공증·배포 승인이 아닙니다. Gatekeeper/조직 정책으로 차단될 수 있습니다. 보안 설정을 끄거나 quarantine을 제거하는 안내는 제공하지 않습니다. 기존 CLT가 없으면 네이티브 단계는 실행되지 않습니다. 다른 물리 기기와 macOS 13/26 실기기 검증은 미실시입니다.
+
+현재 기기에서의 패키지 검증 범위는 `portable/VALIDATION.md`를 보세요. `portable/files.json`은 선별된 추적 소스 목록이며, `portable/PROVENANCE.md`는 코드 출처입니다. 소스 전용 비공개 배포 후보입니다. 원격 게시 여부는 실제 GitHub 저장소의 공개 범위와 커밋으로 확인해야 합니다.
