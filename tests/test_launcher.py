@@ -6,7 +6,7 @@ import unittest
 from urllib.error import HTTPError
 from urllib.request import Request,urlopen
 from unittest.mock import Mock
-from launcher.backend import Console,server,public_steps
+from launcher.backend import Console,server,public_steps,safe_diagnostic
 
 class ConsoleTests(unittest.TestCase):
  def wait(self,c):
@@ -34,7 +34,7 @@ class ConsoleTests(unittest.TestCase):
   runner.assert_called_once_with('mock')
  def test_mock_never_calls_preflight_or_models(self):
   probe=Mock();runner=Mock(return_value={'status':'passed','scope':'mock'});c=Console(None,probe,runner)
-  c.request('mock');self.wait(c);probe.assert_not_called();runner.assert_called_once_with('mock')
+  c.request('mock');v=self.wait(c);self.assertEqual(v['jobs']['mock']['stage'],'검증 완료');probe.assert_not_called();runner.assert_called_once_with('mock')
  def test_cloud_and_arbitrary_actions_rejected(self):
   c=Console(None)
   for action in ['cloud','open','/bin/sh','https://example.invalid']:
@@ -71,3 +71,9 @@ class ConsoleTests(unittest.TestCase):
   package={'events':[{'metadata':base64.b64encode(json.dumps(event).encode()).decode()}]}
   self.assertEqual(set(public_steps(package)[0]),{'phase','route','decision','delivery','policyVersion'})
   with self.assertRaises(ValueError):public_steps({'events':[{'metadata':'!!'}]})
+
+ def test_native_diagnostic_rejects_raw_errors(self):
+  v=safe_diagnostic({'reason':'SYNTHETIC PRIVATE RAW ERROR','stage':'private path','localCalls':99,'output':'SYNTHETIC RESPONSE'})
+  self.assertEqual(v['reason'],'uncertain');self.assertEqual(v['stage'],'unknown');self.assertNotIn('output',v)
+  v=safe_diagnostic({'reason':'appleGuardrail','stage':'apple-generation','localCalls':1})
+  self.assertEqual(v['reason'],'appleGuardrail');self.assertFalse(v['retryAutomatically'])

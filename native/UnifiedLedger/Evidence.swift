@@ -62,7 +62,7 @@ func executeUnifiedDemo(_ file:RegisteredFile,_ evidence:UnifiedEvidence,_ hando
  let cloud=handoff.execute(resource:file,route:.cloud)
  guard cloud.decision == "deny",cloud.delivery == "not-started" else{throw HandoffError.uncertain}
  let local=handoff.execute(resource:file,route:.local)
- guard local.decision == "allow",local.delivery == "received" else{throw HandoffError.uncertain}
+ guard local.decision == "allow",local.delivery == "received" else{throw HandoffError(rawValue:local.reason) ?? .uncertain}
  try evidence.finish()
  return (cloud,local)
 }

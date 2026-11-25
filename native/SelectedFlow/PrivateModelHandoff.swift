@@ -3,7 +3,7 @@ import CryptoKit
 
 // All types here stay within the native process. None is Codable or accepted over HTTP.
 enum PrivateRoute:String {case local, cloud}
-enum HandoffError:String,Error {case disabled, routeDenied, modelMismatch, approvalMissing, runtimeUnverified, duplicate, intentFailed, uncertain}
+enum HandoffError:String,Error {case disabled, routeDenied, modelMismatch, approvalMissing, runtimeUnverified, duplicate, intentFailed, uncertain, appleContextLimit, appleAssetsUnavailable, appleGuardrail, appleUnsupportedGuide, appleUnsupportedLanguage, appleDecoding, appleRateLimited, appleConcurrentRequest, appleRefusal, appleFrameworkError, appleTimeout, appleEmptyResponse}
 struct HandoffBinding:Equatable {
  let resourceID:UUID, revision:Int, policyVersion:Int
  let level:RegisteredLevel, route:PrivateRoute, model:String, destinationID:String

@@ -37,6 +37,7 @@
   "native/SelectedFlow/VerifyAppleAudit.swift",
   "native/SelectedFlow/check.py",
   "native/SelectedFlow/check_apple_audit.py",
+  "native/SelectedFlow/check_apple_diagnostics.py",
   "native/SelectedFlow/check_apple_unavailable.py",
   "native/SelectedFlow/check_handoff.py",
   "native/SelectedFlow/check_presentation.py",

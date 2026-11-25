@@ -197,3 +197,18 @@ python3 demo.py --mode besu --tools-dir /path/to/verified-tools
 macOS 앱은 로컬 ad-hoc 서명 빌드이며 Developer ID 서명·공증·배포 승인이 아닙니다. Gatekeeper/조직 정책으로 차단될 수 있습니다. 보안 설정을 끄거나 quarantine을 제거하는 안내는 제공하지 않습니다. 기존 CLT가 없으면 네이티브 단계는 실행되지 않습니다. 다른 물리 기기와 macOS 13/26 실기기 검증은 미실시입니다.
 
 현재 기기에서의 패키지 검증 범위는 `portable/VALIDATION.md`를 보세요. `portable/files.json`은 선별된 추적 소스 목록이며, `portable/PROVENANCE.md`는 코드 출처입니다. 소스 전용 비공개 배포 후보입니다. 원격 게시 여부는 실제 GitHub 저장소의 공개 범위와 커밋으로 확인해야 합니다.
+
+
+### Apple 준비 완료 이후의 실패 진단
+
+`ready`는 시스템 모델 가용성이고 추론 성공을 보장하지 않습니다. 콘솔은 실패 시 `stage`, `reason`, `localCalls`, `retryAutomatically:false`만 허용 목록으로 전달합니다. 프레임워크 오류 설명/컨텍스트/모델 원문은 로그나 상태 파일로 전달하지 않습니다.
+
+- `appleGuardrail` / `appleRefusal`: 시스템 안전 제한 또는 거부. 제한을 끄거나 다른 경로로 자동 전환하지 않습니다.
+- `appleUnsupportedLanguage`: 요청 언어/로케일 미지원.
+- `appleAssetsUnavailable`, `appleRateLimited`, `appleConcurrentRequest`: 시스템 자산/실행 상태 문제.
+- `appleContextLimit`, `appleUnsupportedGuide`, `appleDecoding`: 프레임워크 생성 제약.
+- `appleTimeout`, `appleEmptyResponse`, `appleFrameworkError`: 시간 초과/빈 결과/분류되지 않은 프레임워크 실패.
+
+추론 시도 후 실패는 `indeterminate`이며 성공/차단으로 바꾸지 않습니다. 새 실행을 자동 예약하지 않습니다. 서명된 완료 package가 없으면 Besu는 시작하지 않습니다. 진단 코드 수정은 파일 접근, 승인, 프롬프트, 네트워크 또는 시스템 guardrail을 완화하지 않습니다.
+
+합성 오류 테스트: `python3 -B native/SelectedFlow/check_apple_diagnostics.py` (모델 호출 0회). 기존 파일·정책 경계 테스트: `python3 -B native/SelectedFlow/check_handoff.py`.

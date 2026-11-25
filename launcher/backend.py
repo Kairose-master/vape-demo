@@ -13,6 +13,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import demo
 from portable.preflight import check
 
+def safe_diagnostic(value):
+    reasons={'disabled','routeDenied','modelMismatch','approvalMissing','runtimeUnverified','duplicate','intentFailed','uncertain','appleContextLimit','appleAssetsUnavailable','appleGuardrail','appleUnsupportedGuide','appleUnsupportedLanguage','appleDecoding','appleRateLimited','appleConcurrentRequest','appleRefusal','appleFrameworkError','appleTimeout','appleEmptyResponse'}
+    return {'status':'indeterminate','stage':value.get('stage') if value.get('stage') in ('setup','policy-and-handoff','apple-generation') else 'unknown',
+            'reason':value.get('reason') if value.get('reason') in reasons else 'uncertain',
+            'localCalls':value.get('localCalls') if type(value.get('localCalls')) is int and 0<=value['localCalls']<=1 else 'unknown',
+            'retryAutomatically':False,'fallback':False,'chain':'not-started; native verification failed'}
+
 def public_steps(package):
     steps=[]
     for envelope in package['events']:
@@ -51,7 +58,9 @@ class Console:
         except Exception:
             result={'status':'indeterminate','reason':'Local verification failed; no success inferred, no retry','fallback':False}
         with self.lock:
-            self.state['jobs'][action].update(result);self.state['jobs'][action]['stage']={'passed':'검증 완료','verified':'검증 완료','checked':'준비 상태 확인 완료','blocked':'실행 전 차단','indeterminate':'판정 불가'}.get(result['status'],'판정 불가');self.state['phase']='idle'
+            self.state['jobs'][action].update(result);self.state['jobs'][action]['completion']={'passed':'검증 완료','verified':'검증 완료','checked':'준비 상태 확인 완료','blocked':'실행 전 차단','indeterminate':'판정 불가'}.get(result['status'],'판정 불가')
+            if result['status']!='indeterminate':self.state['jobs'][action]['stage']=self.state['jobs'][action]['completion']
+            self.state['phase']='idle'
     def run(self, action):
         # Each job gets a clean source copy; raw evidence remains private on this device.
         directory=Path(tempfile.mkdtemp(prefix='vape-console-'))/'Source With Spaces';directory.mkdir(mode=0o700)
@@ -63,7 +72,12 @@ class Console:
         else:command=[sys.executable,'-B','demo.py','--self-test']
         # These fixed workers never receive API keys or user content. Do not publish their stdout.
         result=subprocess.run(command,cwd=str(directory),env=demo.environment(),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        if result.returncode:raise RuntimeError('Worker verification failed')
+        if result.returncode:
+            if action=='apple':
+                diagnostics=list(directory.glob('.runtime/unified-check-*/diagnostic.json'))
+                if len(diagnostics)==1:
+                    return safe_diagnostic(json.loads(diagnostics[0].read_text()))
+            raise RuntimeError('Worker verification failed')
         if action=='mock':return {'status':'passed','scope':'OFFLINE MOCK ONLY: policy/audit/HTTP synthetic tests; no real model or chain'}
         if action=='apple':
             reports=list(directory.glob('.runtime/unified-check-*/exchange/result.json'))
