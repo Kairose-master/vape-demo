@@ -40,7 +40,10 @@ def main():
         from launcher.selected_anchor import SelectedAnchor
         console.selected_anchor=SelectedAnchor(app.parent/'SelectedVerifier',tools)
         helper=app.parent/'VAPE File Registry.app/Contents/MacOS/FilePipeline'
-        if a.ui_test:subprocess.run([str(helper),'--self-test'],check=True,env=__import__('demo').environment())
+        if a.ui_test:
+            subprocess.run([str(helper),'--self-test'],check=True,env=__import__('demo').environment())
+            from native.scripts.check_file_bridge import check as check_file_bridge
+            check_file_bridge(helper,env=__import__('demo').environment())
         to_read,to_write=os.pipe();from_read,from_write=os.pipe()
         file_process=subprocess.Popen([str(helper),'--bridge']+(['--qa'] if a.ui_test or a.gui_qa else []),stdin=to_read,stdout=from_write,stderr=subprocess.DEVNULL,env=__import__('demo').environment())
         os.close(to_read);os.close(from_write)

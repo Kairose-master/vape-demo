@@ -3,12 +3,28 @@ import UniformTypeIdentifiers
 import CryptoKit
 import Darwin
 
+// Restore only the console that owned the initiating interaction. Never activate
+// another application after the user has switched away during a modal panel.
+final class PipelinePanelFocus {
+ private let previous = NSWorkspace.shared.frontmostApplication
+ func finish() {
+  precondition(Thread.isMainThread)
+  guard NSApp.isActive, let previous=previous, !previous.isTerminated,
+        previous.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+        previous.bundleIdentifier?.hasPrefix("org.vape.console.") == true,
+        previous.bundleIdentifier?.hasPrefix("org.vape.console.fileregistry.") != true else{return}
+  previous.activate(options:[])
+ }
+}
+
 // Separate process: user-selected read-only files and bookmarks; NO network entitlement.
 struct PipelinePicker:UserFileSelection {
  let sample:URL;let synthetic:Bool
  func chooseFile()throws->URL? {
   if synthetic{return sample}
   let panel=NSOpenPanel();panel.title="VAPE · 로컬 TXT 가져오기";panel.message="외부 업로드가 아닙니다. 등급 저장은 모델 전송 승인이 아닙니다.";panel.canChooseDirectories=false;panel.allowsMultipleSelection=false;panel.resolvesAliases=false;panel.allowedContentTypes=[.plainText];panel.directoryURL=sample.deletingLastPathComponent()
+  let focus=PipelinePanelFocus()
+  defer{panel.orderOut(nil);focus.finish()}
   NSApp.activate(ignoringOtherApps:true)
   return panel.runModal() == .OK ? panel.url:nil
  }
@@ -186,11 +202,12 @@ final class Pipeline {
   let f=try selected()
   let original:String
   do{original=try writeSource(f)}catch{_ = try event(f,kind:"revision_write_blocked");throw error}
-  let edit=NSAlert();edit.messageText="L3 새 로컬 리비전 작성";edit.informativeText="대상 등록 ID: \(f.resource_id) · r\(f.classification_revision) · 정책 v\(f.policy_version)\n원본은 변경하지 않습니다. 외부 전송 없음."
+  let focus=PipelinePanelFocus();defer{focus.finish()}
+  let edit=NSAlert();defer{edit.window.orderOut(nil)};edit.messageText="L3 새 로컬 리비전 작성";edit.informativeText="대상 등록 ID: \(f.resource_id) · r\(f.classification_revision) · 정책 v\(f.policy_version)\n원본은 변경하지 않습니다. 외부 전송 없음."
   let scroll=NSScrollView(frame:NSRect(x:0,y:0,width:600,height:280));let editor=NSTextView(frame:scroll.bounds);editor.string=original;editor.isRichText=false;editor.isVerticallyResizable=true;editor.autoresizingMask = .width;editor.textContainer?.widthTracksTextView=true;scroll.documentView=editor;scroll.hasVerticalScroller=true;edit.accessoryView=scroll;edit.addButton(withTitle:"변경 비교");edit.addButton(withTitle:"취소");NSApp.activate(ignoringOtherApps:true)
   guard edit.runModal() == .alertFirstButtonReturn else{_ = try event(f,kind:"revision_write_cancelled");return ["status":"cancelled"]}
   let replacement=editor.string,token=try prepareWrite(f,replacement:editor.string)
-  let review=NSAlert();review.messageText="이 변경을 새 로컬 리비전으로 1회 저장 승인";review.informativeText="등록 ID: \(f.resource_id) · L3 · r\(f.classification_revision) · 정책 v\(f.policy_version)\n삭제(-)와 추가(+) 전체를 확인하세요. 원본 보존 · 외부 전송/체인 기록 없음."
+  let review=NSAlert();defer{review.window.orderOut(nil)};review.messageText="이 변경을 새 로컬 리비전으로 1회 저장 승인";review.informativeText="등록 ID: \(f.resource_id) · L3 · r\(f.classification_revision) · 정책 v\(f.policy_version)\n삭제(-)와 추가(+) 전체를 확인하세요. 원본 보존 · 외부 전송/체인 기록 없음."
   let diff=NSTextView(frame:scroll.bounds);diff.isEditable=false;diff.string="--- 원본\n"+original.components(separatedBy:"\n").map{"- "+$0}.joined(separator:"\n")+"\n+++ 새 리비전\n"+replacement.components(separatedBy:"\n").map{"+ "+$0}.joined(separator:"\n");diff.isVerticallyResizable=true;diff.autoresizingMask = .width;diff.textContainer?.widthTracksTextView=true
   let comparison=NSScrollView(frame:scroll.frame);comparison.hasVerticalScroller=true;comparison.documentView=diff;review.accessoryView=comparison;review.addButton(withTitle:"이 변경 1회 저장 승인");review.addButton(withTitle:"취소")
   return try finishWrite(token,approved:review.runModal() == .alertFirstButtonReturn)
@@ -304,18 +321,36 @@ final class Pipeline {
     print("PASS local revisions: L2 denied; L3 saved; original preserved; cancel/replay/stale/source-change/B-write denied; changed L3 source denied; signed audit verified; external calls 0")
     print("{\"status\":\"passed\",\"checks\":15,\"modelCalls\":0,\"picker\":\"synthetic-injected\",\"roles\":\"A grants B; B write denied; C denied; stale and revoked rejected\"}");return
    }
-   let p=try Pipeline(synthetic:false,isolated:CommandLine.arguments.contains("--qa"))
-   repeat {
-    guard let line=readLine() else{break}
-    do {
+   let testing=CommandLine.arguments.contains("--bridge-self-test")
+   let p=try Pipeline(synthetic:testing,isolated:CommandLine.arguments.contains("--qa"))
+   var ticks=0
+   // This probe exists only in an isolated synthetic process, never the GUI bridge.
+   let timer=testing ? Timer.scheduledTimer(withTimeInterval:0.02,repeats:true){_ in ticks += 1}:nil
+   let bridge=CommandLine.arguments.contains("--bridge")
+   DispatchQueue(label:"vape.file-pipeline.stdin").async {
+    repeat {
+     guard let line=readLine() else{break}
+     // Synchronous handoff provides backpressure: no queued/reentrant requests
+     // can mutate the registry while runModal is pumping its nested event loop.
+     DispatchQueue.main.sync {
+      precondition(Thread.isMainThread)
+      do {
      let raw=Data(line.utf8);guard raw.count<=131072,let input=try JSONSerialization.jsonObject(with:raw) as? [String:Any],let action=input["action"] as? String else{throw RegistryError.invalidRequest}
      let result:[String:Any]
-     if action=="role" {guard Set(input.keys)==Set(["action","role"]),let role=input["role"] as? String,["auditor-a","user-b"].contains(role) else{throw RegistryError.invalidRequest};p.role=role;result=["status":"selected","role":role,"scope":"trusted demo role; not external authentication"]}
+     if testing && action=="event-loop-probe" {result=["ticks":ticks,"mainThread":Thread.isMainThread]}
+     else if action=="role" {guard Set(input.keys)==Set(["action","role"]),let role=input["role"] as? String,["auditor-a","user-b"].contains(role) else{throw RegistryError.invalidRequest};p.role=role;result=["status":"selected","role":role,"scope":"trusted demo role; not external authentication"]}
      else if ["identity","receipt","anchor","list","local","preview","commit","cancel-preview"].contains(action){guard Set(input.keys).isSubset(of:["action","resourceID","revision","prompt","token","runID","receipt"]) else{throw RegistryError.invalidRequest};result=try p.attached(input)}
-     else{guard Set(input.keys).isSubset(of:["action","level"]) else{throw RegistryError.invalidRequest};result=try p.run(action,level:input["level"] as? Int)}
+     else{guard Set(input.keys).isSubset(of:["action","level"]) else{throw RegistryError.invalidRequest};result=try p.run(action,level:input["level"] as? Int,synthetic:testing)}
      print(String(decoding:try JSONSerialization.data(withJSONObject:result,options:.sortedKeys),as:UTF8.self));fflush(stdout)
     } catch{let reason=(error as? RegistryError)?.rawValue ?? "indeterminate";print("{\"status\":\"indeterminate\",\"reason\":\""+reason+"\",\"verification\":\"invalidated\",\"chain\":\"unanchored\"}");fflush(stdout)}
-   } while CommandLine.arguments.contains("--bridge")
+     }
+    } while bridge
+    // EOF and one-shot mode both exit through the running AppKit loop, after
+    // the last response was flushed. No stdin wait ever occupies the UI thread.
+    DispatchQueue.main.async{NSApp.terminate(nil)}
+   }
+   NSApp.run()
+   timer?.invalidate()
   } catch {let reason=(error as? RegistryError)?.rawValue ?? "indeterminate";print("{\"status\":\"indeterminate\",\"reason\":\""+reason+"\",\"verification\":\"invalidated\",\"chain\":\"unanchored\"}");exit(1)}
  }
 }
