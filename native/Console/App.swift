@@ -123,6 +123,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
    print("PASS console UI: one native window, five screens, user screen selected, blank secure input, send disabled, sandbox loopback reachable, no model calls")
    NSApp.terminate(nil);return
   }
+  selectPage(navigation[4])
   window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
   timer=Timer.scheduledTimer(withTimeInterval:1,repeats:true){[weak self] _ in self?.refresh()};refresh()
  }
