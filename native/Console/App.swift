@@ -86,6 +86,8 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
   heading("모델 설정",stack)
   route.addItems(withTitles:["Apple · 기기 내 로컬","OpenAI · 외부 클라우드"]);stack.addArrangedSubview(route)
   label("Apple 준비 상태: "+(AppleLocalModel.available() ? "ready":"사용 불가")+"\nOpenAI 모델: "+CloudDemo.model+" · 별도 API 키 필요\n외부 송신은 메시지마다 정확한 내용을 표시하는 확인창에서 직접 승인해야 합니다. 자동 전환·재시도 없음.",stack)
+  label("현재 데모 정책 v1 · 조직별 변경 가능한 정책 예시\nL1: 로컬 처리만 · 외부 전송 차단\nL2: 읽기/로컬 처리 · 허용된 대상에 매 요청 별도 승인 후 외부 전송\nL3: 로컬 처리 · 외부 전송 차단 · 쓰기는 별도 승인이 필요하며 현재 미구현\n읽기 허용은 외부 전송 허용이 아닙니다. 등급 숫자는 기능의 포함 관계가 아닙니다.",stack)
+  stack.addArrangedSubview(NSButton(title:"새 Cloud 요청 준비 · 이전 승인 재사용 안 함",target:self,action:#selector(newCloudRequest)))
   input.placeholderString="API 키 직접 입력 · 채팅으로 보내지 마세요";input.stringValue="";input.widthAnchor.constraint(equalToConstant:730).isActive=true;input.setAccessibilityElement(false);stack.addArrangedSubview(input)
   stack.addArrangedSubview(NSButton(title:"키 붙여넣기 · 보안 필드에만",target:self,action:#selector(pasteKey)))
   stack.addArrangedSubview(NSButton(title:"1. 키 준비 — 아직 전송하지 않음",target:self,action:#selector(prepare)))
@@ -141,6 +143,14 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
    precondition(synthetic.calls==0 && engine.calls==0 && input.stringValue.isEmpty && sendButton.isEnabled)
    send();send();precondition(synthetic.calls==1 && engine.calls==1 && key==nil && !sendButton.isEnabled)
    cancel();precondition(input.stringValue.isEmpty && !sendButton.isEnabled)
+   let oldRun=engine.runID;newCloudRequest();precondition(engine.runID != oldRun && !started && key==nil && input.isEnabled && synthetic.calls==1)
+   chatBusy=true;let pendingRun=engine.runID;newCloudRequest();precondition(engine.runID==pendingRun);chatBusy=false
+   input.stringValue="SYNTHETIC-UI-TEST-NOT-A-REAL-KEY";prepare();precondition(synthetic.calls==1)
+   sendCloud("SYNTHETIC second independently approved request",key:key!);sendCloud("must not repeat",key:"SYNTHETIC-UI-TEST-NOT-A-REAL-KEY")
+   precondition(synthetic.calls==2 && engine.calls==1 && key==nil)
+   RunLoop.current.run(until:Date().addingTimeInterval(0.1))
+   precondition(!chatBusy);cancel();newCloudRequest();precondition(!started && key==nil && input.isEnabled && synthetic.calls==2)
+   print("PASS explicit fresh Cloud request: new run, new key, no prepare transmission, busy reset blocked, consumed request cannot repeat, cancel recoverable")
    print("PASS synthetic UI prepare=0, explicit send=1, repeat=0, cancel clears; real calls=0")
    print("PASS console UI: one native window, five screens, user screen selected, blank secure input, send disabled, sandbox loopback reachable, no model calls")
    NSApp.terminate(nil);return
@@ -234,7 +244,8 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
    fileBridge.call(request){[weak self] result in guard let self=self else{return}
     if request["action"] as? String=="local" {self.chatBusy=false;self.selectedRun=result["anchorAvailable"] as? Bool==true ? result["runID"] as? String:nil;self.anchorButton.isEnabled=self.selectedRun != nil && self.signerPinned;let text=result["output"] as? String ?? "";self.show((text.isEmpty ? "처리 거부/판정 불가: "+(result["reason"] as? String ?? "unknown") : text)+"\n\n실행: "+(result["runID"] as? String ?? "unknown")+"\nCloud 정책: "+(result["cloudPolicy"] as? String ?? "unknown")+" · 외부 송출 0회\n체인: 아직 미기록 · 아래 버튼은 이 성공/실패 실행의 감사만 기록합니다",self.reply);return}
     guard result["status"] as? String=="approval-required",let body=result["body"] as? String,let token=result["token"] as? String else{self.chatBusy=false;self.show("클라우드 전송 차단: "+(result["reason"] as? String ?? "unverified"),self.reply);return}
-    guard self.confirmCloud(body),!self.started,let credential=self.key else{self.chatBusy=false;self.show("승인 취소 또는 키 준비 필요 · 전송 0회",self.reply);return}
+    guard !self.started,let credential=self.key else{self.chatBusy=false;self.show("모델 설정에서 새 Cloud 요청 준비 → 키 준비가 필요합니다. 이번 요청 전송 0회",self.reply);return}
+    guard self.confirmCloud(body) else{self.chatBusy=false;self.show("사용자가 승인 취소 · 이번 요청 전송 0회",self.reply);return}
     request["action"]="commit";request["token"]=token
     self.fileBridge.call(request){[weak self] grant in guard let self=self else{return};guard grant["status"] as? String=="approved-once",let current=grant["body"] as? String,current==body else{self.chatBusy=false;self.show("파일·등급·정책 변경 또는 승인 무효 · 전송 0회",self.reply);return};self.sendCloud(body,key:credential)}
    }
@@ -251,7 +262,7 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
     DispatchQueue.main.async{self?.chatBusy=false;if let self=self{self.show(answer,self.reply)}}
    }
   } else {
-   guard !started,let credential=key else{show("모델 설정에서 키를 직접 준비하세요. 이 세션에서 이미 1회 전송했다면 자동 재송신하지 않습니다.",reply);return}
+   guard !started,let credential=key else{show("모델 설정에서 새 Cloud 요청 준비 → 키를 직접 준비하세요. 이전 승인으로 재전송하지 않습니다.",reply);return}
    guard confirmCloud(text) else{show("승인 취소 · 외부 송출 0회",reply);return}
    sendCloud(text,key:credential)
   }
@@ -262,10 +273,11 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
 
  }
  private func sendCloud(_ text:String,key credential:String){
+   guard !started else{return}
    started=true;key=nil;input.stringValue="";sendButton.isEnabled=false;chatBusy=true
-   do{let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0];let audit=try CloudAudit(support.appendingPathComponent("PromptAudit-"+UUID().uuidString));let request=CloudEngine(transport:HTTPSCloud(),audit:{try audit.append($0)},text:text);self.engine=request
+   do{let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0];let audit=try CloudAudit(support.appendingPathComponent("PromptAudit-"+UUID().uuidString));let request=CloudEngine(transport:uiTest ? synthetic : HTTPSCloud(),audit:{try audit.append($0)},text:text);self.engine=request
     show("승인된 메시지 1회 전송 중…",reply)
-    request.executeL2(key:credential,approved:true){[weak self] result in DispatchQueue.main.async{guard let self=self else{return};self.chatBusy=false;self.show(result.output ?? ("판정: "+result.decision+" · "+result.reason+" · 자동 재시도 없음"),self.reply)}}
+    request.executeL2(key:credential,approved:true){[weak self] result in DispatchQueue.main.async{guard let self=self else{return};self.chatBusy=false;self.status.stringValue="요청 종료 · 키 폐기됨. 다음 메시지는 새 Cloud 요청 준비 후 새 키 준비·승인이 필요합니다.";self.show(result.output ?? ("판정: "+result.decision+" · "+result.reason+" · 자동 재시도 없음"),self.reply)}}
    }catch{chatBusy=false;show("감사 기록 준비 실패 · 전송하지 않았습니다.",reply)}
  }
  @objc private func selectPage(_ sender:NSButton){guard !chatBusy else{return};pages.selectTabViewItem(at:sender.tag);for button in navigation{button.state=button===sender ? .on : .off}
@@ -275,6 +287,12 @@ final class ConsoleApp:NSObject,NSApplicationDelegate,NSWindowDelegate {
  @objc private func apple(){action("apple")}
  @objc private func besu(){action("besu")}
  @objc private func mockRun(){action("mock")}
+ @objc private func newCloudRequest(){
+  guard !chatBusy else{return}
+  key=nil;input.stringValue="";sendButton.isEnabled=false;input.isEnabled=false
+  do{let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0];let audit=try CloudAudit(support.appendingPathComponent("CloudAudit-"+UUID().uuidString));engine=CloudEngine(transport:uiTest ? synthetic : HTTPSCloud(),audit:{try audit.append($0)});started=false;input.isEnabled=true;status.stringValue="새 요청 준비됨 · 전송 0회. 키를 다시 준비한 후 이번 내용만 새로 승인하세요. 이전 요청 재시도 아님."}
+  catch{started=true;status.stringValue="새 요청 감사 준비 실패 · 전송 차단"}
+ }
  @objc private func pasteKey(){SecurePaste.userAction(enabled:!started && key==nil && input.isEnabled,focusSecureField:{self.window.makeFirstResponder(self.input)},dispatchStandardPaste:{NSApp.sendAction(Selector(("paste:")),to:nil,from:self.input)})}
  @objc private func prepare(){guard !started,key==nil else{return};let value=input.stringValue;guard CloudDemo.keyFormat(value) else{status.stringValue="키 형식을 확인하세요. 호출 0회.";return};key=value;input.stringValue="";input.isEnabled=false;sendButton.isEnabled=true;status.stringValue="키 준비됨 · 호출 0회. 사용자 화면에서 전송 내용을 확인해 승인하세요."}
  @objc private func send(){guard !started,let credential=key else{return};started=true;key=nil;input.stringValue="";sendButton.isEnabled=false;status.stringValue="1등급 차단 및 의도 기록 후 합성 2등급 요청을 1회 실행 중…"
